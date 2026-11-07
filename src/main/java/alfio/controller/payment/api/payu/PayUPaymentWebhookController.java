@@ -35,6 +35,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
+import java.util.Set;
 
 import static alfio.manager.payment.PayUManager.ADDITIONAL_INFO_RESERVATION_ID;
 import static alfio.manager.payment.PayUManager.WEBHOOK_URL_TEMPLATE;
@@ -47,6 +48,7 @@ public class PayUPaymentWebhookController {
     static final String SIGNATURE_HEADER = "OpenPayu-Signature";
     static final String FALLBACK_SIGNATURE_HEADER = "X-OpenPayU-Signature";
     private static final String NOT_RELEVANT = "NOT_RELEVANT";
+    private static final Set<String> PAID_ORDER_STATUSES = Set.of("COMPLETED", "WAITING_FOR_CONFIRMATION");
 
     private final TicketReservationManager ticketReservationManager;
     private final PurchaseContextManager purchaseContextManager;
@@ -61,7 +63,7 @@ public class PayUPaymentWebhookController {
         var content = body.get();
         var purchaseContext = purchaseContextManager.findByReservationId(reservationId);
         if (purchaseContext.isEmpty()) {
-            log.warn("Received PayU notification for unknown reservation {} (orderId: {})", reservationId, extractOrderId(content));
+            logUnknownReservation(reservationId, content);
             return ResponseEntity.ok(NOT_RELEVANT);
         }
         var result = ticketReservationManager.processTransactionWebhook(content, readSignature(request), PaymentProxy.PAYU,
@@ -69,7 +71,9 @@ public class PayUPaymentWebhookController {
         if (result.isSuccessful()) {
             return ResponseEntity.ok("OK");
         } else if (result.isError()) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(result.getReason());
+            // PayU retries the notification; the reason stays in the logs
+            log.warn("PayU notification for reservation {} could not be processed: {}", reservationId, result.getReason());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("NOK");
         }
         return ResponseEntity.ok(result.getReason());
     }
@@ -82,25 +86,52 @@ public class PayUPaymentWebhookController {
         return signature;
     }
 
-    private static String extractOrderId(String content) {
+    /**
+     * The body is not verified here (the signature is checked only for a known reservation): its values are only
+     * logged, sanitized. A paid order for an unknown reservation means money may have been taken without a
+     * reservation, so it is logged as an error.
+     */
+    private static void logUnknownReservation(String reservationId, String content) {
+        var root = parseObject(content);
+        var order = childObject(root, "order");
+        var orderId = stringOrNull(order, "orderId");
+        if (orderId == null) {
+            orderId = stringOrNull(root, "orderId");
+        }
+        var status = stringOrNull(order, "status");
+        var safeOrderId = RequestUtils.sanitizeForLog(orderId);
+        var safeStatus = RequestUtils.sanitizeForLog(status);
+        if (status != null && PAID_ORDER_STATUSES.contains(status)) {
+            log.error("Received PayU notification of a {} order {} for unknown reservation {}: money may be captured without a reservation; check the PayU panel and refund if needed",
+                safeStatus, safeOrderId, reservationId);
+        } else {
+            log.warn("Received PayU notification for unknown reservation {} (orderId: {}, status: {})", reservationId, safeOrderId, safeStatus);
+        }
+    }
+
+    private static JsonObject parseObject(String content) {
         try {
             var element = JsonParser.parseString(content);
-            if (!element.isJsonObject()) {
-                return null;
-            }
-            JsonObject root = element.getAsJsonObject();
-            if (root.has("order") && root.get("order").isJsonObject()) {
-                var order = root.getAsJsonObject("order");
-                if (order.has("orderId") && order.get("orderId").isJsonPrimitive()) {
-                    return order.get("orderId").getAsString();
-                }
-            }
-            if (root.has("orderId") && root.get("orderId").isJsonPrimitive()) {
-                return root.get("orderId").getAsString();
+            if (element.isJsonObject()) {
+                return element.getAsJsonObject();
             }
             return null;
         } catch (RuntimeException e) {
             return null;
         }
+    }
+
+    private static JsonObject childObject(JsonObject parent, String property) {
+        if (parent == null || !parent.has(property) || !parent.get(property).isJsonObject()) {
+            return null;
+        }
+        return parent.getAsJsonObject(property);
+    }
+
+    private static String stringOrNull(JsonObject object, String property) {
+        if (object == null || !object.has(property) || !object.get(property).isJsonPrimitive()) {
+            return null;
+        }
+        return object.get(property).getAsString();
     }
 }

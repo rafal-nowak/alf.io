@@ -71,6 +71,13 @@ export class OverviewComponent implements OnInit {
   ngOnInit() {
     if (this.route.snapshot.queryParams['paymentCancelled'] === 'true') {
       this.feedbackService.showError('reservation-page.payment.cancelled');
+      // remove the flag from the URL, so that a reload does not show the notice again
+      this.router.navigate([], {
+        relativeTo: this.route,
+        queryParams: {paymentCancelled: null},
+        queryParamsHandling: 'merge',
+        replaceUrl: true
+      });
     }
     zip(this.route.data, this.route.params).subscribe(([data, params]) => {
 

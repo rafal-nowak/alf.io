@@ -33,10 +33,12 @@ import alfio.model.transaction.TransactionWebhookPayload;
 import alfio.model.transaction.webhook.PayUWebhookPayload;
 import alfio.repository.TicketReservationRepository;
 import alfio.repository.TransactionRepository;
+import alfio.test.util.LogCapture;
 import alfio.test.util.TestUtil;
 import alfio.util.ClockProvider;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -152,6 +154,8 @@ class PayUManagerTest {
             return response;
         });
         manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository, TestUtil.clockProvider());
+        // the cancellation is confirmed without really waiting between the re-reads
+        manager.setCancelConfirmationTiming(Duration.ZERO, Duration.ofSeconds(3));
     }
 
     @Test
@@ -503,6 +507,30 @@ class PayUManagerTest {
         verify(transactionRepository, never()).insert(any(), any(), any(), any(), anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
     }
 
+    @Test
+    void successfulCreationWithoutOrderIdOrRedirectUriFailsAndRecordsNothing() {
+        var replies = List.of(
+            "{\"status\":{\"statusCode\":\"SUCCESS\"},\"redirectUri\":\"https://payu.example/pay\"}",
+            "{\"status\":{\"statusCode\":\"SUCCESS\"},\"orderId\":\"ORDER1\"}");
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            for (var reply : replies) {
+                orderCreationApi = request -> new Reply(302, reply);
+
+                var result = assertDoesNotThrow(() -> manager.doPayment(spec(null, null)));
+
+                assertTrue(result.isFailed(), reply);
+                assertEquals(Optional.of("error.STEP2_PAYU_unexpected"), result.getErrorCode());
+            }
+            var errors = logs.messages(Level.ERROR);
+            assertEquals(2, errors.size(), errors.toString());
+            assertTrue(errors.stream().allMatch(m -> m.contains(RESERVATION_ID) && m.contains("no orderId or redirectUri")), errors.toString());
+        }
+        verify(ticketReservationRepository, never()).updateReservationStatus(any(), any());
+        verify(ticketReservationRepository, never()).updateValidity(any(), any());
+        verify(transactionRepository, never()).invalidateForReservation(any(), any());
+        verify(transactionRepository, never()).insert(any(), any(), any(), any(), anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
+    }
+
     // --- status mapping: webhook and force-check (spec §3) ---
 
     @Test
@@ -528,6 +556,21 @@ class PayUManagerTest {
 
         assertEquals(PaymentWebhookResult.Type.ERROR, webhook.getType());
         assertEquals(PaymentWebhookResult.Type.ERROR, forced.getType());
+        verify(transactionRepository, never()).update(anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void completedOrderWithoutExtOrderIdIsAMismatch() throws Exception {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = request -> new Reply(200, "{\"orders\":[{\"orderId\":\"" + OLD_ORDER_ID
+            + "\",\"totalAmount\":\"1000\",\"currencyCode\":\"PLN\",\"status\":\"COMPLETED\"}],\"status\":{\"statusCode\":\"SUCCESS\"}}");
+
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            var result = manager.processWebhook(webhookPayload("COMPLETED"), transaction, new PaymentContext(event));
+
+            assertEquals(PaymentWebhookResult.Type.ERROR, result.getType());
+            assertEquals(1, logs.messages(Level.ERROR).size(), logs.messages(Level.ERROR).toString());
+        }
         verify(transactionRepository, never()).update(anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
     }
 
@@ -692,6 +735,30 @@ class PayUManagerTest {
     }
 
     @Test
+    void cancellationPollingStopsWhenTheNextPauseWouldExceedTheTimeBudget() {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = orderChangingOnDelete("PENDING", "PENDING");
+        manager.setCancelConfirmationTiming(Duration.ofHours(1), Duration.ofSeconds(3));
+
+        var discarded = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> manager.discardTransaction(transaction, event));
+
+        assertFalse(discarded);
+        // status check, then the first re-read: waiting an hour for the next one would exceed the budget
+        assertEquals(2, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
+    }
+
+    @Test
+    void cancellationPollingStopsWhenTheTimeBudgetIsUsedUp() {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = orderCancelledAfterReReads(2);
+        manager.setCancelConfirmationTiming(Duration.ZERO, Duration.ZERO);
+
+        // the order would be CANCELED on the third re-read, but there is no time left after the first one
+        assertFalse(manager.discardTransaction(transaction, event));
+        assertEquals(2, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
+    }
+
+    @Test
     void discardTransactionIsFalseWhenDeleteIsRefused() throws Exception {
         var transaction = givenExistingTransaction();
         existingOrderApi = request -> {
@@ -767,8 +834,36 @@ class PayUManagerTest {
 
         assertTrue(payload.isPresent());
         assertEquals("payu-COMPLETED", payload.get().getType());
-        var result = manager.processWebhook(payload.get(), transaction, new PaymentContext(event));
-        assertEquals(PaymentWebhookResult.Type.NOT_RELEVANT, result.getType());
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            var result = manager.processWebhook(payload.get(), transaction, new PaymentContext(event));
+            assertEquals(PaymentWebhookResult.Type.NOT_RELEVANT, result.getType());
+            var errors = logs.messages(Level.ERROR);
+            assertEquals(1, errors.size(), errors.toString());
+            assertTrue(errors.get(0).contains(RESERVATION_ID) && errors.get(0).contains("ANOTHERORDER") && errors.get(0).contains(OLD_ORDER_ID),
+                errors.get(0));
+            assertTrue(errors.get(0).contains("refund"), errors.get(0));
+        }
+        verifyNoInteractions(httpClient);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "ANOTHERORDER, WAITING_FOR_CONFIRMATION, PENDING, true",
+        "ANOTHERORDER, NEW, PENDING, false",
+        "ANOTHERORDER, CANCELED, PENDING, false",
+        "OLDORDER, COMPLETED, CANCELLED, true",
+        "OLDORDER, COMPLETED, COMPLETE, false"
+    })
+    void unmatchedPaidNotificationIsLoggedAsError(String orderId, String orderStatus, Transaction.Status transactionStatus, boolean errorExpected) {
+        var transaction = givenExistingTransaction();
+        when(transaction.getStatus()).thenReturn(transactionStatus);
+
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            var result = manager.processWebhook(PayUWebhookPayload.order(RESERVATION_ID, orderId, orderStatus), transaction, new PaymentContext(event));
+
+            assertEquals(PaymentWebhookResult.Type.NOT_RELEVANT, result.getType());
+            assertEquals(errorExpected, !logs.messages(Level.ERROR).isEmpty(), logs.messages(Level.ERROR).toString());
+        }
         verifyNoInteractions(httpClient);
     }
 
@@ -885,19 +980,41 @@ class PayUManagerTest {
     void endpointOverrideReplacesPayUEndpoints() throws Exception {
         var transaction = givenExistingTransaction();
         existingOrderApi = request -> orderLookup("CANCELED", "1000", "PLN", EXISTING_EXT_ORDER_ID);
-        for (var liveMode : List.of("false", "true")) {
-            configuration.put(PAYU_LIVE_MODE, existing(PAYU_LIVE_MODE, liveMode));
-            manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository,
-                TestUtil.clockProvider(), "http://localhost:1234/");
-            assertTrue(manager.doPayment(spec(null, null)).isRedirect());
-            manager.discardTransaction(transaction, event);
-        }
+        manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository,
+            TestUtil.clockProvider(), "http://localhost:1234/");
+        assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+        manager.discardTransaction(transaction, event);
 
         var requests = sentRequests();
         assertFalse(requests.isEmpty());
         for (var request : requests) {
             assertTrue(request.uri().toString().startsWith("http://localhost:1234/"), request.uri().toString());
             assertFalse(request.uri().toString().startsWith("http://localhost:1234//"), request.uri().toString());
+        }
+    }
+
+    @Test
+    void endpointOverrideIsIgnoredInLiveMode() throws Exception {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = request -> orderLookup("CANCELED", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        configuration.put(PAYU_LIVE_MODE, existing(PAYU_LIVE_MODE, "true"));
+
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository,
+                TestUtil.clockProvider(), "http://localhost:1234/");
+            assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+            manager.discardTransaction(transaction, event);
+
+            var errors = logs.messages(Level.ERROR);
+            assertEquals(1, errors.size(), errors.toString());
+            assertTrue(errors.get(0).contains("live mode"), errors.get(0));
+        }
+
+        var requests = sentRequests();
+        assertTrue(requests.size() > 2);
+        for (var request : requests) {
+            // the credentials (OAuth) and every API call go to the live PayU endpoint, never to the override
+            assertTrue(request.uri().toString().startsWith("https://secure.payu.com/"), request.uri().toString());
         }
     }
 
@@ -1064,6 +1181,7 @@ class PayUManagerTest {
         when(transaction.getPriceInCents()).thenReturn(1000);
         when(transaction.getCurrency()).thenReturn("PLN");
         when(transaction.getPaymentProxy()).thenReturn(PaymentProxy.PAYU);
+        when(transaction.getStatus()).thenReturn(Transaction.Status.PENDING);
         when(transaction.getMetadata()).thenReturn(Map.of("extOrderId", EXISTING_EXT_ORDER_ID));
         when(transactionRepository.loadOptionalByStatusAndPaymentProxyForUpdate(RESERVATION_ID, Transaction.Status.PENDING, PaymentProxy.PAYU))
             .thenReturn(Optional.of(transaction));

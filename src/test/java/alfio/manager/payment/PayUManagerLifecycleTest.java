@@ -91,6 +91,7 @@ class PayUManagerLifecycleTest {
             return result;
         });
         manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository, TestUtil.clockProvider());
+        manager.setCancelConfirmationTiming(java.time.Duration.ZERO, java.time.Duration.ofSeconds(3));
     }
 
     @SuppressWarnings("unchecked")

@@ -65,6 +65,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.UnaryOperator;
 
 import static alfio.manager.payment.PaymentManagerUtils.invalidateExistingTransactions;
@@ -93,7 +94,7 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     static final String LIVE_ENDPOINT = "https://secure.payu.com";
     private static final String EXT_ORDER_ID = "extOrderId";
     private static final String DEFAULT_CUSTOMER_IP = "127.0.0.1";
-    // PayU status code for an unknown order (to be verified on the sandbox)
+    // PayU answers HTTP 404 with this status code for an unknown order (confirmed on the sandbox)
     private static final String ORDER_NOT_FOUND_STATUS = "DATA_NOT_FOUND";
     private static final int MIN_VALIDITY_SECONDS = 300;
     private static final int DEFAULT_RESERVATION_TIMEOUT_MINUTES = 25;
@@ -103,6 +104,10 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     // PayU applies an accepted DELETE asynchronously: the order can still be NEW or PENDING right after it
     private static final int CANCEL_CONFIRMATION_READS = 5;
     private static final Duration CANCEL_CONFIRMATION_PAUSE = Duration.ofMillis(500);
+    // the re-reads run under the reservation lock: the waiting for the cancellation is bounded as a whole
+    private static final Duration CANCEL_CONFIRMATION_BUDGET = Duration.ofSeconds(3);
+    // order statuses in which the buyer's money has been taken (or authorized)
+    private static final Set<String> PAID_ORDER_STATUSES = Set.of("COMPLETED", "WAITING_FOR_CONFIRMATION");
     // used when the OAuth response has no expires_in
     private static final long DEFAULT_TOKEN_LIFETIME_SECONDS = 300;
     // a cached token is renewed this long before it expires
@@ -121,8 +126,11 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     private final TicketReservationRepository ticketReservationRepository;
     private final TransactionRepository transactionRepository;
     private final ClockProvider clockProvider;
-    private final String sandboxEndpoint;
-    private final String liveEndpoint;
+    // hidden test property, never used in live mode; null when not set
+    private final String endpointOverride;
+    private final AtomicBoolean liveOverrideReported = new AtomicBoolean(false);
+    private Duration cancelConfirmationPause = CANCEL_CONFIRMATION_PAUSE;
+    private Duration cancelConfirmationBudget = CANCEL_CONFIRMATION_BUDGET;
     // PayU tokens last about 12 hours; the entry itself is checked against its expiration (see accessToken)
     private final Cache<String, AccessToken> accessTokens = Caffeine.newBuilder()
         .expireAfterWrite(Duration.ofHours(12))
@@ -138,7 +146,8 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     }
 
     /**
-     * @param endpointOverride hidden property for tests: when set, every PayU call (sandbox and live) goes to this URL
+     * @param endpointOverride hidden property for tests: when set, every sandbox PayU call goes to this URL. It is
+     *                         ignored in live mode, so that live credentials are never sent to another host.
      */
     @Autowired
     public PayUManager(ConfigurationManager configurationManager,
@@ -153,14 +162,19 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         this.transactionRepository = transactionRepository;
         this.clockProvider = clockProvider;
         if (StringUtils.isNotBlank(endpointOverride)) {
-            var override = Strings.CS.removeEnd(endpointOverride.trim(), "/");
-            LOGGER.warn("PayU endpoint overridden: every PayU call goes to {}", override);
-            this.sandboxEndpoint = override;
-            this.liveEndpoint = override;
+            this.endpointOverride = Strings.CS.removeEnd(endpointOverride.trim(), "/");
+            LOGGER.warn("PayU endpoint overridden: every sandbox PayU call goes to {} (ignored in live mode)", this.endpointOverride);
         } else {
-            this.sandboxEndpoint = SANDBOX_ENDPOINT;
-            this.liveEndpoint = LIVE_ENDPOINT;
+            this.endpointOverride = null;
         }
+    }
+
+    /**
+     * For tests: the pause between the re-reads that confirm a cancellation, and the time budget of those re-reads.
+     */
+    void setCancelConfirmationTiming(Duration pause, Duration budget) {
+        this.cancelConfirmationPause = pause;
+        this.cancelConfirmationBudget = budget;
     }
 
     @Override
@@ -278,9 +292,8 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         var actualCurrency = stringOrNull(order, "currencyCode");
         var expectedExtOrderId = metadataValue(transaction, EXT_ORDER_ID);
         var actualExtOrderId = stringOrNull(order, EXT_ORDER_ID);
-        boolean extOrderIdMatches = expectedExtOrderId == null
-            || actualExtOrderId == null
-            || expectedExtOrderId.equals(actualExtOrderId);
+        // an order without extOrderId cannot be proven to belong to a transaction that has one
+        boolean extOrderIdMatches = expectedExtOrderId == null || expectedExtOrderId.equals(actualExtOrderId);
         boolean matches = expectedAmount.equals(actualAmount)
             && transaction.getCurrency() != null
             && transaction.getCurrency().equals(actualCurrency)
@@ -321,11 +334,18 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(orderBody.toString())));
             var responseBody = parseObject(response.body());
-            if (!isSuccess(responseBody) || responseBody == null || !responseBody.has("redirectUri")) {
+            if (!isSuccess(responseBody)) {
                 LOGGER.warn("PayU order creation failed with status {}, body {}", response.statusCode(), response.body());
                 return PaymentResult.failed("error.STEP2_PAYU_unexpected");
             }
-            var orderId = responseBody.get("orderId").getAsString();
+            var orderId = stringOrNull(responseBody, "orderId");
+            var redirectUri = stringOrNull(responseBody, "redirectUri");
+            if (orderId == null || redirectUri == null) {
+                // PayU may have created an order that alf.io cannot track: it expires unpaid, as the buyer never gets its link
+                LOGGER.error("PayU accepted the order {} of reservation {} but its response has no orderId or redirectUri (orderId {}): status {}, body {}",
+                    extOrderId, reservationId, orderId, response.statusCode(), response.body());
+                return PaymentResult.failed("error.STEP2_PAYU_unexpected");
+            }
             ticketReservationRepository.updateReservationStatus(reservationId, EXTERNAL_PROCESSING_PAYMENT.toString());
             // keep the reservation alive while the PayU order can still be paid
             ticketReservationRepository.updateValidity(reservationId, Date.from(now.plusSeconds(validityTime + RESERVATION_VALIDITY_SLACK_SECONDS)));
@@ -334,7 +354,7 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
                 ZonedDateTime.now(clockProvider.withZone(purchaseContext.getZoneId())),
                 spec.getPriceWithVAT(), purchaseContext.getCurrency(), "PayU payment",
                 PaymentProxy.PAYU.name(), 0L, 0L, Transaction.Status.PENDING, Map.of(EXT_ORDER_ID, extOrderId));
-            return PaymentResult.redirect(responseBody.get("redirectUri").getAsString());
+            return PaymentResult.redirect(redirectUri);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             LOGGER.error("PayU order creation interrupted", e);
@@ -428,8 +448,8 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
      * PayU requires the buyer's IP address. The controller puts it in the payment specification; when it is missing
      * (for example, a payment not started from the public frontend), the loopback address is sent.
      * <p>
-     * PayU refuses (INVALID_CUSTOMER_IP) an IPv6 address in brackets, as Jetty returns it, or with a zone index:
-     * both are removed.
+     * PayU accepts an IPv6 address (confirmed on the sandbox), but refuses with INVALID_CUSTOMER_IP one in brackets,
+     * as Jetty returns it, or with a zone index: both are removed.
      */
     private static String resolveCustomerIp(PaymentSpecification spec) {
         String customerIp = spec.getCustomerIp();
@@ -495,11 +515,22 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
             return PaymentWebhookResult.notRelevant("not a PayU order notification");
         }
         var notifiedOrderId = payUPayload.getOrderId();
-        if (notifiedOrderId == null || !notifiedOrderId.equals(transaction.getPaymentId())) {
+        boolean sameOrder = notifiedOrderId != null && notifiedOrderId.equals(transaction.getPaymentId());
+        if (sameOrder && transaction.getStatus() == Transaction.Status.PENDING) {
+            return checkOrderStatus(transaction, loadConfiguration(paymentContext.getPurchaseContext()),
+                PaymentWebhookResult.notRelevant("order not paid yet"));
+        }
+        var notifiedStatus = payUPayload.getOrderStatus();
+        boolean paid = notifiedStatus != null && PAID_ORDER_STATUSES.contains(notifiedStatus);
+        boolean alreadyCompleted = sameOrder && transaction.getStatus() == Transaction.Status.COMPLETE;
+        if (paid && !alreadyCompleted) {
+            LOGGER.error("PayU notified the {} order {} for reservation {}, whose transaction ({}) refers to order {}: money may be captured without a reservation; check the PayU panel and refund if needed",
+                notifiedStatus, notifiedOrderId, transaction.getReservationId(), transaction.getStatus(), transaction.getPaymentId());
+        }
+        if (!sameOrder) {
             return PaymentWebhookResult.notRelevant("notification refers to a different PayU order");
         }
-        return checkOrderStatus(transaction, loadConfiguration(paymentContext.getPurchaseContext()),
-            PaymentWebhookResult.notRelevant("order not paid yet"));
+        return PaymentWebhookResult.notRelevant("transaction is not pending");
     }
 
     /**
@@ -659,10 +690,19 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     }
 
     /**
-     * Refunds a PayU order, in full ({@code amount} null) or in part. The {@code extRefundId} is deterministic
-     * ({@code <reservationId>-refund-<amountCents>-<n>}, n = 1 + the refunds already listed), so that when the POST
-     * times out the refunds can be re-read to know whether PayU received it, and a retry is never sent twice under
-     * the same id.
+     * Refunds a PayU order, in full ({@code amount} null) or in part. The {@code extRefundId} is deterministic:
+     * {@code <reservationId>-refund-<amountCents>-<n>}, where n = 1 + the refunds already listed for the order.
+     * <p>
+     * It protects against:
+     * <ul>
+     *     <li>a POST that times out: the refunds are re-read within the same call and the refund counts as done
+     *     only if one with this id is listed;</li>
+     *     <li>concurrent duplicates: two requests computed from the same listing carry the same id, and PayU accepts
+     *     an {@code extRefundId} only once per order.</li>
+     * </ul>
+     * It does not protect against an operator retry after a refund that actually landed (for example, after the
+     * timeout re-read could not confirm it): the listing then has one more refund, n is different, and a second
+     * refund is sent. Check the PayU panel before retrying a refund that was reported as failed.
      */
     @Override
     public boolean refund(Transaction transaction, PurchaseContext purchaseContext, Integer amount) {
@@ -793,11 +833,14 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
      * Cancels a PayU order (DELETE), then always re-reads it to confirm the cancellation.
      * <p>
      * The DELETE response alone proves nothing: PayU answers HTTP 200 with body status SUCCESS even for an order
-     * that is already COMPLETED, and the order stays COMPLETED. The order counts as cancelled only when the re-read
-     * shows it CANCELED or not found, whatever the DELETE answered (including a timeout or an I/O error).
+     * that is already COMPLETED, and the order stays COMPLETED (confirmed on the sandbox). The order counts as
+     * cancelled only when the re-read shows it CANCELED or not found, whatever the DELETE answered (including a
+     * timeout or an I/O error).
      * <p>
-     * PayU applies an accepted DELETE asynchronously, so a NEW or PENDING order is re-read a few times, with a short
-     * pause, before giving up.
+     * On the sandbox, a DELETE of a PENDING order answers SUCCESS and the order becomes CANCELED, and no money is
+     * taken afterwards. PayU applies an accepted DELETE asynchronously, so a NEW or PENDING order is re-read up to
+     * {@value #CANCEL_CONFIRMATION_READS} times, with a short pause, within an overall time budget (the re-reads run
+     * under the reservation lock); when the budget is used up the order is reported as not cancelled.
      */
     private CancelOutcome cancelOrder(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId) {
         boolean deleteAccepted = false;
@@ -816,11 +859,17 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         } catch (Exception e) {
             LOGGER.warn("Unexpected error while cancelling PayU order {}", orderId, e);
         }
+        long pollingStart = System.nanoTime();
         var lookup = retrieveOrder(configuration, orderId);
         int reads = 1;
         while (deleteAccepted && reads < CANCEL_CONFIRMATION_READS && isCancellationInProgress(lookup)) {
+            var elapsed = Duration.ofNanos(System.nanoTime() - pollingStart);
+            if (elapsed.plus(cancelConfirmationPause).compareTo(cancelConfirmationBudget) >= 0) {
+                LOGGER.warn("PayU order {} still not cancelled after {} re-read(s) in {} ms, giving up", orderId, reads, elapsed.toMillis());
+                break;
+            }
             try {
-                Thread.sleep(CANCEL_CONFIRMATION_PAUSE);
+                Thread.sleep(cancelConfirmationPause);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 LOGGER.warn("Interrupted while waiting for the cancellation of PayU order {}", orderId);
@@ -968,11 +1017,22 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         }
     }
 
+    /**
+     * The endpoint override applies to the sandbox only: in live mode the live endpoint is always used, so that live
+     * credentials never reach another host. The ignored override is logged as an error once.
+     */
     private String endpoint(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration) {
         if (configuration.get(PAYU_LIVE_MODE).getValueAsBooleanOrDefault()) {
-            return liveEndpoint;
+            if (endpointOverride != null && liveOverrideReported.compareAndSet(false, true)) {
+                LOGGER.error("PayU endpoint override {} is set but PayU is in live mode: the override is ignored and {} is used. Remove alfio.payu.endpoint-override",
+                    endpointOverride, LIVE_ENDPOINT);
+            }
+            return LIVE_ENDPOINT;
         }
-        return sandboxEndpoint;
+        if (endpointOverride != null) {
+            return endpointOverride;
+        }
+        return SANDBOX_ENDPOINT;
     }
 
     private static boolean isSuccess(JsonObject body) {

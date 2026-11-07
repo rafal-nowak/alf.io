@@ -21,12 +21,16 @@ import alfio.manager.TicketReservationManager;
 import alfio.manager.support.PaymentResult;
 import alfio.model.PurchaseContext;
 import alfio.model.TicketReservation;
+import alfio.test.util.LogCapture;
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -105,6 +109,21 @@ class PayUCallbackControllerTest {
     void pendingPaymentRedirectsToBook() {
         when(ticketReservationManager.forceTransactionCheck(purchaseContext, reservation)).thenReturn(Optional.of(PaymentResult.pending("ORDER-1")));
         assertEquals(BOOK, payuReturn(null, null));
+    }
+
+    @Test
+    void errorParametersAreSanitizedBeforeLogging() {
+        when(ticketReservationManager.cancelPendingPayment(RESERVATION_ID, purchaseContext)).thenReturn(true);
+        try (var logs = LogCapture.of(PayUCallbackController.class)) {
+            assertEquals(OVERVIEW_CANCELLED, payuReturn("501\r\nERROR forged log line", "\u0007" + "x".repeat(200)));
+
+            var messages = logs.messages(Level.INFO);
+            assertEquals(1, messages.size(), messages.toString());
+            var message = messages.get(0);
+            assertTrue(message.contains("501"), message);
+            assertFalse(message.contains("\r") || message.contains("\n") || message.contains("\u0007"), message);
+            assertFalse(message.contains("x".repeat(100)), message);
+        }
     }
 
     @Test
