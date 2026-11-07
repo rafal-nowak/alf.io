@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.Timeout;
+import org.openqa.selenium.Dimension;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.env.Environment;
@@ -81,6 +82,10 @@ abstract class BaseE2ETest {
         var serverBaseUrl = environment.getRequiredProperty("e2e.server.url");
         slug = "e2e-" + UUID.randomUUID();
         browserWebDriver = browserWebDriverFactory.create(getClass().getSimpleName() + "." + testInfo.getTestMethod().orElseThrow().getName());
+        if (!CI_RUN) {
+            // the default headless window is so small that the public frontend switches to its mobile layout
+            browserWebDriver.driver.manage().window().setSize(new Dimension(1920, 1080));
+        }
         adminConsole = new AdminConsole(browserWebDriver,
             serverBaseUrl,
             environment.getRequiredProperty("e2e.admin.username"),
@@ -137,6 +142,13 @@ abstract class BaseE2ETest {
         return 10;
     }
 
+    /**
+     * Currency of the event. Payment providers that support only some currencies (e.g. PayU) override it.
+     */
+    protected String currency() {
+        return "CHF";
+    }
+
     private AdminConsole.EventDefinition eventDefinition() {
         return new AdminConsole.EventDefinition(slug,
             "Event Name",
@@ -147,7 +159,7 @@ abstract class BaseE2ETest {
             "https://alf.io",
             maxTickets(),
             "10",
-            "CHF",
+            currency(),
             "7.7",
             true,
             requiredPaymentProxies(),

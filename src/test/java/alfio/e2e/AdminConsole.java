@@ -1541,6 +1541,7 @@ class AdminConsole {
             case STRIPE -> "Stripe: Credit cards";
             case ON_SITE -> "On site (cash) payment";
             case OFFLINE -> "Offline payment";
+            case PAYU -> "PayU: BLIK, fast transfer, card";
             default -> throw new IllegalArgumentException(paymentProxy + " is not supported in E2E tests");
         };
     }

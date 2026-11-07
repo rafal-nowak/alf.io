@@ -28,6 +28,7 @@ import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 
 import static alfio.e2e.E2EUtils.*;
+import static org.openqa.selenium.support.ui.ExpectedConditions.elementToBeClickable;
 import static org.openqa.selenium.support.ui.ExpectedConditions.presenceOfElementLocated;
 import static org.openqa.selenium.support.ui.ExpectedConditions.urlContains;
 
@@ -67,6 +68,50 @@ class ReservationFlow {
     void buyTicketWithBankTransfer(String lastName) {
         reserveTicket(lastName);
         page3BankTransferPayment();
+    }
+
+    /**
+     * Buys a ticket and pays it on the PayU sandbox, with a positive authorization of the test bank transfer,
+     * then waits until the payment has been confirmed.
+     */
+    void buyTicketWithPayU(String lastName) {
+        reserveTicket(lastName);
+        page3PayUPayment(true);
+        Assertions.assertNotNull(waitForPaymentConfirmation());
+    }
+
+    /**
+     * Buys a ticket and gives up the payment on the PayU sandbox (negative authorization of the test bank transfer).
+     * PayU then sends the attendee back with "error=501", and the reservation overview is displayed again.
+     */
+    void abandonPayUPayment(String lastName) {
+        reserveTicket(lastName);
+        page3PayUPayment(false);
+        wait.until(urlContains("/overview"));
+    }
+
+    /**
+     * Waits for a toast and returns its message.
+     * Toasts hide themselves after a few seconds, so call this right after the action that displays them.
+     */
+    String waitForErrorToast() {
+        // the message is empty until its translation has been rendered
+        return wait.ignoring(StaleElementReferenceException.class)
+            .until(d -> d.findElements(By.cssSelector("ngb-toast .message")).stream()
+                .map(WebElement::getText)
+                .filter(text -> !text.isBlank())
+                .findFirst()
+                .orElse(null));
+    }
+
+    /**
+     * The payment page can be submitted again: once the payment method has been chosen and the terms accepted,
+     * the submit button is enabled.
+     */
+    boolean paymentMethodCanBeChosen(String paymentMethod) {
+        selectPaymentMethod(paymentMethod);
+        acceptTerms();
+        return driver.findElement(By.cssSelector("button[type=submit].btn-success")).isEnabled();
     }
 
     private void reserveTicket(String lastName) {
@@ -170,6 +215,32 @@ class ReservationFlow {
             });
     }
 
+    /**
+     * Pays on the PayU sandbox hosted page, with the "mTransfer" test bank, whose simulator lets us choose
+     * the outcome of the authorization. The selectors were checked against the sandbox (secure.snd.payu.com).
+     *
+     * @param authorize true for a positive authorization, false for a negative one (the attendee gives up)
+     */
+    private void page3PayUPayment(boolean authorize) {
+        selectPaymentMethod("PAYU");
+        acceptTermsAndSubmit();
+        var payuWait = new WebDriverWait(driver, Duration.of(60, ChronoUnit.SECONDS));
+        // PayU hosted page: bank transfer, then the mTransfer test bank
+        payuWait.until(elementToBeClickable(By.cssSelector("a[href='#/payment/wire']"))).click();
+        payuWait.until(elementToBeClickable(By.cssSelector("button[title='mTransfer']"))).click();
+        // bank simulator: choose the outcome of the authorization
+        payuWait.until(urlContains("/simulator/"));
+        if (authorize) {
+            payuWait.until(elementToBeClickable(By.id("formSubmit"))).click();
+        } else {
+            payuWait.until(elementToBeClickable(By.id("formReturn"))).click();
+        }
+        // confirmation page of the simulator: go back to the shop (continueUrl)
+        payuWait.until(urlContains("/auth"));
+        payuWait.until(elementToBeClickable(By.id("formSubmit"))).click();
+        payuWait.until(urlContains("/reservation/"));
+    }
+
     private void page3BankTransferPayment() {
         selectPaymentMethod("BANK_TRANSFER");
         acceptTermsAndSubmit();
@@ -188,13 +259,16 @@ class ReservationFlow {
     }
 
     private void acceptTermsAndSubmit() {
-        driver.findElements(By.id("privacy-policy-label")).forEach(e -> selectElement(e, browserWebDriver));
-        selectElement(driver.findElement(By.id("terms-conditions-label")), browserWebDriver);
+        acceptTerms();
 
         //submit
         driver.findElement(By.cssSelector(".btn-success")).sendKeys(Keys.RETURN);
     }
 
+    private void acceptTerms() {
+        driver.findElements(By.id("privacy-policy-label")).forEach(e -> selectElement(e, browserWebDriver));
+        selectElement(driver.findElement(By.id("terms-conditions-label")), browserWebDriver);
+    }
 
     private void sendSlowInput(WebElement element, CharSequence... strings) throws InterruptedException {
         if(browserWebDriver.browser == BrowserWebDriver.Browser.SAFARI || browserWebDriver.browser == BrowserWebDriver.Browser.IE) {
