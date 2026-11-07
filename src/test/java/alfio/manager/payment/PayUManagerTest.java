@@ -34,6 +34,7 @@ import alfio.model.transaction.webhook.PayUWebhookPayload;
 import alfio.repository.TicketReservationRepository;
 import alfio.repository.TransactionRepository;
 import alfio.test.util.TestUtil;
+import alfio.util.ClockProvider;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.junit.jupiter.api.BeforeEach;
@@ -51,6 +52,8 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
@@ -89,6 +92,10 @@ class PayUManagerTest {
     private final List<String> orderBodies = new ArrayList<>();
     // answers every PayU call except OAuth and order creation
     private ExistingOrderApi existingOrderApi = request -> new Reply(500, "");
+    // answers the OAuth calls; the argument is the 1-based number of the OAuth call
+    private OAuthApi oauthApi = count -> "{\"access_token\":\"tok\",\"expires_in\":43199}";
+    private int oauthCalls = 0;
+    private ConfigurationManager configurationManager;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
@@ -96,7 +103,7 @@ class PayUManagerTest {
         httpClient = mock(HttpClient.class);
         transactionRepository = mock(TransactionRepository.class);
         ticketReservationRepository = mock(TicketReservationRepository.class);
-        var configurationManager = mock(ConfigurationManager.class);
+        configurationManager = mock(ConfigurationManager.class);
         event = mock(Event.class);
         when(event.getConfigurationLevel()).thenReturn(ConfigurationLevel.organization(1));
         when(event.getCurrency()).thenReturn("PLN");
@@ -126,7 +133,9 @@ class PayUManagerTest {
             HttpResponse<String> response = mock(HttpResponse.class);
             if (request.uri().getPath().endsWith("/oauth/authorize")) {
                 when(response.statusCode()).thenReturn(200);
-                when(response.body()).thenReturn("{\"access_token\":\"tok\",\"expires_in\":43199}");
+                oauthCalls++;
+                var oauthBody = oauthApi.answer(oauthCalls);
+                when(response.body()).thenReturn(oauthBody);
             } else if ("POST".equals(request.method()) && request.uri().getPath().equals("/api/v2_1/orders")) {
                 orderBodies.add(readBody(request));
                 when(response.statusCode()).thenReturn(302);
@@ -539,6 +548,256 @@ class PayUManagerTest {
         assertNotEquals("payu-null", payload.get().getType());
         assertDoesNotThrow(() -> payload.get().getStatus());
         assertEquals(OLD_ORDER_ID, ((PayUWebhookPayload) payload.get()).getOrderId());
+    }
+
+    // --- hardening: token cache, timeouts, endpoint override, currency gating ---
+
+    @Test
+    void accessTokenIsCachedAcrossCalls() {
+        manager.doPayment(spec(null, null));
+        manager.doPayment(spec(null, null));
+
+        assertEquals(1, requestCount("POST", "/pl/standard/user/oauth/authorize"));
+        assertEquals(2, requestCount("POST", "/api/v2_1/orders"));
+    }
+
+    @Test
+    void differentClientSecretRequestsNewToken() {
+        manager.doPayment(spec(null, null));
+        configuration.put(PAYU_CLIENT_SECRET, existing(PAYU_CLIENT_SECRET, "another-secret"));
+        manager.doPayment(spec(null, null));
+
+        assertEquals(2, requestCount("POST", "/pl/standard/user/oauth/authorize"));
+    }
+
+    @Test
+    void unauthorizedResponseRefreshesTokenAndRetriesOnce() throws Exception {
+        var transaction = givenExistingTransaction();
+        oauthApi = count -> "{\"access_token\":\"tok" + count + "\",\"expires_in\":43199}";
+        var reads = new int[] {0};
+        existingOrderApi = request -> {
+            reads[0]++;
+            if (reads[0] == 1) {
+                return new Reply(401, "{\"error\":\"invalid_token\"}");
+            }
+            return orderLookup("PENDING", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        };
+
+        var result = manager.forceTransactionCheck(null, transaction, new PaymentContext(event));
+
+        assertEquals(PaymentWebhookResult.pending().getType(), result.getType());
+        assertEquals(2, requestCount("POST", "/pl/standard/user/oauth/authorize"));
+        var reads2 = sentRequests().stream()
+            .filter(r -> "GET".equals(r.method()) && r.uri().getPath().equals("/api/v2_1/orders/" + OLD_ORDER_ID))
+            .toList();
+        assertEquals(2, reads2.size());
+        assertEquals("Bearer tok1", reads2.get(0).headers().firstValue("Authorization").orElseThrow());
+        assertEquals("Bearer tok2", reads2.get(1).headers().firstValue("Authorization").orElseThrow());
+
+        // a second 401 is not retried again: the read is an ERROR
+        existingOrderApi = request -> new Reply(401, "{\"error\":\"invalid_token\"}");
+        var failed = manager.forceTransactionCheck(null, transaction, new PaymentContext(event));
+        assertEquals(PaymentWebhookResult.Type.ERROR, failed.getType());
+        assertEquals(3, requestCount("POST", "/pl/standard/user/oauth/authorize"));
+    }
+
+    @Test
+    void missingExpiresInDefaultsToFiveMinutes() {
+        var start = Instant.now(TestUtil.clockProvider().getClock());
+        var now = new Instant[] {start};
+        var clockProvider = mock(ClockProvider.class);
+        when(clockProvider.getClock()).thenAnswer(inv -> Clock.fixed(now[0], ZoneId.of("UTC")));
+        when(clockProvider.withZone(any())).thenAnswer(inv -> Clock.fixed(now[0], inv.getArgument(0)));
+        manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository, clockProvider);
+        oauthApi = count -> "{\"access_token\":\"tok" + count + "\"}";
+
+        assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+        // 300 s lifetime, renewed 60 s before it expires
+        now[0] = start.plusSeconds(230);
+        assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+        assertEquals(1, requestCount("POST", "/pl/standard/user/oauth/authorize"));
+
+        now[0] = start.plusSeconds(250);
+        assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+        assertEquals(2, requestCount("POST", "/pl/standard/user/oauth/authorize"));
+    }
+
+    @Test
+    void everyRequestHasTenSecondTimeout() throws Exception {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = request -> {
+            if (!"GET".equals(request.method())) {
+                return new Reply(200, "{\"status\":{\"statusCode\":\"SUCCESS\"}}");
+            }
+            return orderLookup("NEW", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        };
+        // OAuth, GET, DELETE, POST order
+        assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+        // PUT capture, then a refund POST
+        existingOrderApi = request -> {
+            if (!"GET".equals(request.method())) {
+                return new Reply(200, "{\"status\":{\"statusCode\":\"SUCCESS\"}}");
+            }
+            return orderLookup("WAITING_FOR_CONFIRMATION", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        };
+        manager.forceTransactionCheck(null, transaction, new PaymentContext(event));
+        manager.refund(transaction, event, null);
+
+        var requests = sentRequests();
+        var methods = requests.stream().map(HttpRequest::method).collect(java.util.stream.Collectors.toSet());
+        assertEquals(Set.of("GET", "POST", "PUT", "DELETE"), methods);
+        assertTrue(requests.stream().anyMatch(r -> r.uri().getPath().endsWith("/oauth/authorize")));
+        for (var request : requests) {
+            assertEquals(Optional.of(Duration.ofSeconds(10)), request.timeout(), request.method() + " " + request.uri());
+        }
+    }
+
+    @Test
+    void endpointOverrideReplacesPayUEndpoints() throws Exception {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = request -> orderLookup("CANCELED", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        for (var liveMode : List.of("false", "true")) {
+            configuration.put(PAYU_LIVE_MODE, existing(PAYU_LIVE_MODE, liveMode));
+            manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository,
+                TestUtil.clockProvider(), "http://localhost:1234/");
+            assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+            manager.discardTransaction(transaction, event);
+        }
+
+        var requests = sentRequests();
+        assertFalse(requests.isEmpty());
+        for (var request : requests) {
+            assertTrue(request.uri().toString().startsWith("http://localhost:1234/"), request.uri().toString());
+            assertFalse(request.uri().toString().startsWith("http://localhost:1234//"), request.uri().toString());
+        }
+    }
+
+    @Test
+    void isActiveGatesOnSupportedCurrencies() {
+        assertTrue(manager.isActive(new PaymentContext(event)));
+
+        when(event.getCurrency()).thenReturn("JPY");
+        assertFalse(manager.isActive(new PaymentContext(event)));
+
+        // no purchase context (system-level listing): no gating
+        assertTrue(manager.isActive(new PaymentContext()));
+    }
+
+    @Test
+    void refundUsesDeterministicExtRefundIdAndAmountOnlyWhenPartial() throws Exception {
+        var transaction = givenExistingTransaction();
+        List<JsonObject> refundBodies = new ArrayList<>();
+        var listing = new String[] { refundListing(refundEntry("a", "100", "FINALIZED"), refundEntry("b", "200", "PENDING")) };
+        existingOrderApi = request -> {
+            if (!request.uri().getPath().equals(REFUNDS_PATH)) {
+                return new Reply(500, "");
+            }
+            if ("POST".equals(request.method())) {
+                refundBodies.add(JsonParser.parseString(readBody(request)).getAsJsonObject().getAsJsonObject("refund"));
+                return new Reply(200, "{\"orderId\":\"" + OLD_ORDER_ID + "\",\"refund\":{},\"status\":{\"statusCode\":\"SUCCESS\"}}");
+            }
+            return new Reply(200, listing[0]);
+        };
+
+        // partial refund, 2 refunds already listed
+        assertTrue(manager.refund(transaction, event, 400));
+        assertEquals(RESERVATION_ID + "-refund-400-3", refundBodies.get(0).get("extRefundId").getAsString());
+        assertEquals("400", refundBodies.get(0).get("amount").getAsString());
+
+        // full refund, no refund yet: the amount is the transaction price and is not sent
+        listing[0] = refundListing();
+        assertTrue(manager.refund(transaction, event, null));
+        assertEquals(RESERVATION_ID + "-refund-1000-1", refundBodies.get(1).get("extRefundId").getAsString());
+        assertFalse(refundBodies.get(1).has("amount"));
+    }
+
+    @Test
+    void refundTimeoutIsResolvedByReReadingRefunds() throws Exception {
+        var transaction = givenExistingTransaction();
+        var expectedId = RESERVATION_ID + "-refund-400-1";
+        var reReadListing = new String[] { refundListing(refundEntry(expectedId, "400", "PENDING")) };
+        int[] gets = { 0 };
+        existingOrderApi = request -> {
+            if (!request.uri().getPath().equals(REFUNDS_PATH)) {
+                return new Reply(500, "");
+            }
+            if ("POST".equals(request.method())) {
+                throw new HttpTimeoutException("request timed out");
+            }
+            gets[0]++;
+            if (gets[0] == 1) {
+                return new Reply(200, refundListing());
+            }
+            return new Reply(200, reReadListing[0]);
+        };
+
+        // the refund reached PayU although the answer timed out: success, and the POST is not repeated
+        assertTrue(manager.refund(transaction, event, 400));
+        assertEquals(1, requestCount("POST", REFUNDS_PATH));
+
+        // the re-read does not list the refund: failure
+        gets[0] = 0;
+        reReadListing[0] = refundListing();
+        assertFalse(manager.refund(transaction, event, 400));
+
+        // the initial GET fails: false, and nothing is posted
+        clearInvocations(httpClient);
+        existingOrderApi = request -> new Reply(503, "Service Unavailable");
+        assertFalse(manager.refund(transaction, event, 400));
+        assertEquals(0, requestCount("POST", REFUNDS_PATH));
+    }
+
+    @Test
+    void getInfoSumsFinalizedRefunds() throws Exception {
+        var transaction = givenExistingTransaction();
+        var listing = new String[] { refundListing(refundEntry("a", "300", "FINALIZED"), refundEntry("b", "200", "FINALIZED"),
+            refundEntry("c", "100", "PENDING"), refundEntry("d", "50", "CANCELED")) };
+        existingOrderApi = request -> {
+            if (request.uri().getPath().equals(REFUNDS_PATH)) {
+                return new Reply(200, listing[0]);
+            }
+            return orderLookup("COMPLETED", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        };
+
+        var info = manager.getInfo(transaction, event).orElseThrow();
+        assertEquals("10.00", info.getPaidAmount());
+        assertEquals("5.00", info.getRefundedAmount());
+        assertNull(info.getFee());
+        assertNull(info.getPlatformFee());
+
+        listing[0] = refundListing(refundEntry("c", "100", "PENDING"));
+        var withoutFinalized = manager.getInfo(transaction, event).orElseThrow();
+        assertEquals("10.00", withoutFinalized.getPaidAmount());
+        assertNull(withoutFinalized.getRefundedAmount());
+    }
+
+    private static final String REFUNDS_PATH = "/api/v2_1/orders/" + OLD_ORDER_ID + "/refunds";
+
+    private static String refundListing(String... entries) {
+        return "{\"refunds\":[" + String.join(",", entries) + "]}";
+    }
+
+    private static String refundEntry(String extRefundId, String amount, String status) {
+        return "{\"refundId\":\"R-" + extRefundId + "\",\"extRefundId\":\"" + extRefundId + "\",\"amount\":\"" + amount
+            + "\",\"currencyCode\":\"PLN\",\"status\":\"" + status + "\"}";
+    }
+
+    private List<HttpRequest> sentRequests() {
+        return mockingDetails(httpClient).getInvocations().stream()
+            .filter(i -> i.getMethod().getName().equals("send"))
+            .map(i -> (HttpRequest) i.getArgument(0))
+            .toList();
+    }
+
+    private long requestCount(String method, String path) {
+        return sentRequests().stream()
+            .filter(r -> method.equals(r.method()) && r.uri().getPath().equals(path))
+            .count();
+    }
+
+    @FunctionalInterface
+    private interface OAuthApi {
+        String answer(int count);
     }
 
     private Optional<TransactionWebhookPayload> parse(String body) {

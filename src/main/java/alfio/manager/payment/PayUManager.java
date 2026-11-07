@@ -36,27 +36,36 @@ import alfio.repository.TransactionRepository;
 import alfio.util.ClockProvider;
 import alfio.util.HttpUtils;
 import alfio.util.MonetaryUtil;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.Strings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.UnaryOperator;
 
 import static alfio.manager.payment.PaymentManagerUtils.invalidateExistingTransactions;
 import static alfio.model.TicketReservation.TicketReservationStatus.EXTERNAL_PROCESSING_PAYMENT;
@@ -89,6 +98,12 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     private static final int MIN_VALIDITY_SECONDS = 300;
     private static final int DEFAULT_RESERVATION_TIMEOUT_MINUTES = 25;
     private static final long RESERVATION_VALIDITY_SLACK_SECONDS = 300;
+    // every PayU call runs under the reservation lock: keep the worst case short (spec L7)
+    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    // used when the OAuth response has no expires_in
+    private static final long DEFAULT_TOKEN_LIFETIME_SECONDS = 300;
+    // a cached token is renewed this long before it expires
+    private static final long TOKEN_RENEWAL_MARGIN_SECONDS = 60;
     static final Set<String> SUPPORTED_CURRENCIES = Set.of("PLN", "EUR", "USD", "CZK", "GBP", "HUF", "RON", "BGN", "DKK", "NOK", "SEK", "CHF");
     // languages accepted by PayU for buyer.language (hosted payment page)
     static final Set<String> BUYER_LANGUAGES = Set.of("pl", "en", "cs", "sk", "de", "es", "fr", "it", "hu", "ro", "bg", "uk",
@@ -103,18 +118,46 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     private final TicketReservationRepository ticketReservationRepository;
     private final TransactionRepository transactionRepository;
     private final ClockProvider clockProvider;
-    private final Map<String, AccessToken> accessTokens = new ConcurrentHashMap<>();
+    private final String sandboxEndpoint;
+    private final String liveEndpoint;
+    // PayU tokens last about 12 hours; the entry itself is checked against its expiration (see accessToken)
+    private final Cache<String, AccessToken> accessTokens = Caffeine.newBuilder()
+        .expireAfterWrite(Duration.ofHours(12))
+        .maximumSize(1000)
+        .build();
 
     public PayUManager(ConfigurationManager configurationManager,
                        HttpClient httpClient,
                        TicketReservationRepository ticketReservationRepository,
                        TransactionRepository transactionRepository,
                        ClockProvider clockProvider) {
+        this(configurationManager, httpClient, ticketReservationRepository, transactionRepository, clockProvider, null);
+    }
+
+    /**
+     * @param endpointOverride hidden property for tests: when set, every PayU call (sandbox and live) goes to this URL
+     */
+    @Autowired
+    public PayUManager(ConfigurationManager configurationManager,
+                       HttpClient httpClient,
+                       TicketReservationRepository ticketReservationRepository,
+                       TransactionRepository transactionRepository,
+                       ClockProvider clockProvider,
+                       @Value("${alfio.payu.endpoint-override:}") String endpointOverride) {
         this.configurationManager = configurationManager;
         this.httpClient = httpClient;
         this.ticketReservationRepository = ticketReservationRepository;
         this.transactionRepository = transactionRepository;
         this.clockProvider = clockProvider;
+        if (StringUtils.isNotBlank(endpointOverride)) {
+            var override = Strings.CS.removeEnd(endpointOverride.trim(), "/");
+            LOGGER.warn("PayU endpoint overridden: every PayU call goes to {}", override);
+            this.sandboxEndpoint = override;
+            this.liveEndpoint = override;
+        } else {
+            this.sandboxEndpoint = SANDBOX_ENDPOINT;
+            this.liveEndpoint = LIVE_ENDPOINT;
+        }
     }
 
     @Override
@@ -146,6 +189,10 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     public boolean isActive(PaymentContext paymentContext) {
         var configuration = configurationManager.getFor(ALL_KEYS, paymentContext.getConfigurationLevel());
         if (!configuration.get(PAYU_ENABLED).getValueAsBooleanOrDefault()) {
+            return false;
+        }
+        var purchaseContext = paymentContext.getPurchaseContext();
+        if (purchaseContext != null && !SUPPORTED_CURRENCIES.contains(purchaseContext.getCurrency())) {
             return false;
         }
         return REQUIRED_KEYS.stream().allMatch(key -> configuration.get(key).isPresent());
@@ -266,12 +313,10 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
             var now = Instant.now(clockProvider.getClock());
             var validityTime = computeValidityTime(reservation, configuration, now);
             var orderBody = buildOrderRequest(spec, configuration, description, extOrderId, validityTime);
-            var request = authorizedRequest(configuration, "/api/v2_1/orders")
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(orderBody.toString()))
-                .build();
             // PayU answers with HTTP 302 and a JSON body: the HttpClient must not follow redirects (default: NEVER)
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            var response = sendAuthorized(configuration, "/api/v2_1/orders", builder -> builder
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(orderBody.toString())));
             var responseBody = parseObject(response.body());
             if (!isSuccess(responseBody) || responseBody == null || !responseBody.has("redirectUri")) {
                 LOGGER.warn("PayU order creation failed with status {}, body {}", response.statusCode(), response.body());
@@ -541,44 +586,148 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
 
     @Override
     public Optional<PaymentInformation> getInfo(Transaction transaction, PurchaseContext purchaseContext) {
-        var lookup = retrieveOrder(loadConfiguration(purchaseContext), transaction.getPaymentId());
+        var configuration = loadConfiguration(purchaseContext);
+        var lookup = retrieveOrder(configuration, transaction.getPaymentId());
         if (lookup.outcome() != OrderLookupOutcome.FOUND) {
             return Optional.empty();
         }
-        return Optional.of(lookup.order())
-            .map(order -> new PaymentInformation(
-                MonetaryUtil.formatCents(Integer.parseInt(order.get("totalAmount").getAsString()), order.get("currencyCode").getAsString()),
-                null, null, null));
+        var order = lookup.order();
+        var totalAmount = stringOrNull(order, "totalAmount");
+        var currency = stringOrNull(order, "currencyCode");
+        if (totalAmount == null || currency == null) {
+            LOGGER.warn("PayU order {} has no amount or currency", transaction.getPaymentId());
+            return Optional.empty();
+        }
+        String paidAmount;
+        try {
+            paidAmount = MonetaryUtil.formatCents(Long.parseLong(totalAmount), currency);
+        } catch (NumberFormatException e) {
+            LOGGER.warn("PayU order {} has an unexpected amount {}", transaction.getPaymentId(), totalAmount);
+            return Optional.empty();
+        }
+        return Optional.of(new PaymentInformation(paidAmount, refundedAmount(configuration, transaction.getPaymentId(), currency), null, null));
     }
 
+    /**
+     * @return the sum of the FINALIZED refunds of an order, or null when there is none or the refunds cannot be read
+     */
+    private String refundedAmount(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId, String currency) {
+        var refunds = retrieveRefunds(configuration, orderId);
+        if (refunds.isEmpty()) {
+            return null;
+        }
+        long refundedCents = 0;
+        boolean anyFinalized = false;
+        for (var element : refunds.get()) {
+            if (!element.isJsonObject()) {
+                continue;
+            }
+            var refund = element.getAsJsonObject();
+            var amount = stringOrNull(refund, "amount");
+            if (!"FINALIZED".equals(stringOrNull(refund, "status")) || amount == null) {
+                continue;
+            }
+            try {
+                refundedCents += Long.parseLong(amount);
+                anyFinalized = true;
+            } catch (NumberFormatException e) {
+                LOGGER.warn("PayU refund of order {} has an unexpected amount {}", orderId, amount);
+            }
+        }
+        if (!anyFinalized) {
+            return null;
+        }
+        return MonetaryUtil.formatCents(refundedCents, currency);
+    }
+
+    /**
+     * Refunds a PayU order, in full ({@code amount} null) or in part. The {@code extRefundId} is deterministic
+     * ({@code <reservationId>-refund-<amountCents>-<n>}, n = 1 + the refunds already listed), so that when the POST
+     * times out the refunds can be re-read to know whether PayU received it, and a retry is never sent twice under
+     * the same id.
+     */
     @Override
     public boolean refund(Transaction transaction, PurchaseContext purchaseContext, Integer amount) {
         var configuration = loadConfiguration(purchaseContext);
+        var orderId = transaction.getPaymentId();
+        int amountCents;
+        if (amount != null) {
+            amountCents = amount;
+        } else {
+            amountCents = transaction.getPriceInCents();
+        }
+        var existingRefunds = retrieveRefunds(configuration, orderId);
+        if (existingRefunds.isEmpty()) {
+            LOGGER.warn("Cannot read the refunds of PayU order {}, not refunding", orderId);
+            return false;
+        }
+        var extRefundId = transaction.getReservationId() + "-refund-" + amountCents + "-" + (existingRefunds.get().size() + 1);
         var refund = new JsonObject();
         refund.addProperty("description", "Refund " + transaction.getReservationId());
+        refund.addProperty("extRefundId", extRefundId);
         if (amount != null) {
             refund.addProperty("amount", Integer.toString(amount));
         }
         var body = new JsonObject();
         body.add("refund", refund);
         try {
-            var request = authorizedRequest(configuration, "/api/v2_1/orders/" + transaction.getPaymentId() + "/refunds")
+            var response = sendAuthorized(configuration, "/api/v2_1/orders/" + orderId + "/refunds", builder -> builder
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
-                .build();
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                .POST(HttpRequest.BodyPublishers.ofString(body.toString())));
             if (!isSuccess(parseObject(response.body()))) {
-                LOGGER.warn("PayU refund failed with status {}, body {}", response.statusCode(), response.body());
+                LOGGER.warn("PayU refund {} failed with status {}, body {}", extRefundId, response.statusCode(), response.body());
                 return false;
             }
             return true;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            LOGGER.warn("PayU refund interrupted", e);
+            LOGGER.warn("PayU refund {} interrupted", extRefundId, e);
             return false;
+        } catch (IOException e) {
+            LOGGER.warn("PayU refund {} got no answer, re-reading the refunds of order {}", extRefundId, orderId, e);
+            return refundExists(configuration, orderId, extRefundId);
         } catch (Exception e) {
-            LOGGER.error("Unexpected error while refunding PayU order {}", transaction.getPaymentId(), e);
+            LOGGER.error("Unexpected error while refunding PayU order {}", orderId, e);
             return false;
+        }
+    }
+
+    private boolean refundExists(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId, String extRefundId) {
+        var refunds = retrieveRefunds(configuration, orderId);
+        if (refunds.isEmpty()) {
+            LOGGER.warn("Cannot re-read the refunds of PayU order {}, refund {} not confirmed", orderId, extRefundId);
+            return false;
+        }
+        for (var element : refunds.get()) {
+            if (element.isJsonObject() && extRefundId.equals(stringOrNull(element.getAsJsonObject(), "extRefundId"))) {
+                return true;
+            }
+        }
+        LOGGER.warn("PayU refund {} of order {} not found", extRefundId, orderId);
+        return false;
+    }
+
+    /**
+     * Reads the refunds of a PayU order (GET {@code /api/v2_1/orders/{id}/refunds}). This call has no side effects.
+     *
+     * @return the {@code refunds} array, or empty when it cannot be read
+     */
+    private Optional<JsonArray> retrieveRefunds(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId) {
+        try {
+            var response = sendAuthorized(configuration, "/api/v2_1/orders/" + orderId + "/refunds", HttpRequest.Builder::GET);
+            var body = parseObject(response.body());
+            if (!HttpUtils.callSuccessful(response) || body == null || !body.has("refunds") || !body.get("refunds").isJsonArray()) {
+                LOGGER.warn("Cannot retrieve the refunds of PayU order {}: status {}, body {}", orderId, response.statusCode(), response.body());
+                return Optional.empty();
+            }
+            return Optional.of(body.getAsJsonArray("refunds"));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            LOGGER.warn("Interrupted while retrieving the refunds of PayU order {}", orderId);
+            return Optional.empty();
+        } catch (Exception e) {
+            LOGGER.warn("Unexpected error while retrieving the refunds of PayU order {}", orderId, e);
+            return Optional.empty();
         }
     }
 
@@ -597,8 +746,7 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
      */
     private OrderLookup retrieveOrder(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId) {
         try {
-            var request = authorizedRequest(configuration, "/api/v2_1/orders/" + orderId).GET().build();
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            var response = sendAuthorized(configuration, "/api/v2_1/orders/" + orderId, HttpRequest.Builder::GET);
             var body = parseObject(response.body());
             if (response.statusCode() == 404 || ORDER_NOT_FOUND_STATUS.equals(statusCode(body))) {
                 return new OrderLookup(OrderLookupOutcome.NOT_FOUND, null);
@@ -629,8 +777,7 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
      */
     private CancelOutcome cancelOrder(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId) {
         try {
-            var request = authorizedRequest(configuration, "/api/v2_1/orders/" + orderId).DELETE().build();
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            var response = sendAuthorized(configuration, "/api/v2_1/orders/" + orderId, HttpRequest.Builder::DELETE);
             if (isSuccess(parseObject(response.body()))) {
                 return CancelOutcome.CANCELLED;
             }
@@ -658,11 +805,9 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         body.addProperty("orderId", orderId);
         body.addProperty("orderStatus", "COMPLETED");
         try {
-            var request = authorizedRequest(configuration, "/api/v2_1/orders/" + orderId + "/status")
+            var response = sendAuthorized(configuration, "/api/v2_1/orders/" + orderId + "/status", builder -> builder
                 .header("Content-Type", "application/json")
-                .PUT(HttpRequest.BodyPublishers.ofString(body.toString()))
-                .build();
-            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+                .PUT(HttpRequest.BodyPublishers.ofString(body.toString())));
             if (!isSuccess(parseObject(response.body()))) {
                 LOGGER.warn("Cannot confirm PayU order {}: status {}, body {}", orderId, response.statusCode(), response.body());
             }
@@ -673,48 +818,101 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         }
     }
 
-    private HttpRequest.Builder authorizedRequest(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String path) throws Exception {
-        return HttpRequest.newBuilder()
-            .uri(URI.create(endpoint(configuration) + path))
-            .header("Authorization", "Bearer " + accessToken(configuration))
-            .header("Accept", "application/json");
+    /**
+     * Sends an authenticated PayU API call. On HTTP 401 the cached token is dropped and the call is retried once
+     * with a fresh token; a second 401 is returned to the caller, which handles it as an error.
+     *
+     * @param method sets the HTTP method, body and extra headers on the request builder
+     */
+    private HttpResponse<String> sendAuthorized(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration,
+                                                String path,
+                                                UnaryOperator<HttpRequest.Builder> method) throws IOException, InterruptedException {
+        var response = httpClient.send(authorizedRequest(configuration, path, method), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        if (response.statusCode() != 401) {
+            return response;
+        }
+        LOGGER.info("PayU rejected the access token for {}, retrying with a new one", path);
+        accessTokens.invalidate(tokenCacheKey(configuration));
+        return httpClient.send(authorizedRequest(configuration, path, method), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
     }
 
-    private String accessToken(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration) throws Exception {
-        var endpoint = endpoint(configuration);
-        var clientId = configuration.get(PAYU_CLIENT_ID).getRequiredValue();
-        var clientSecret = configuration.get(PAYU_CLIENT_SECRET).getRequiredValue();
-        var cacheKey = endpoint + "|" + clientId;
-        var cached = accessTokens.get(cacheKey);
+    private HttpRequest authorizedRequest(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration,
+                                          String path,
+                                          UnaryOperator<HttpRequest.Builder> method) throws IOException, InterruptedException {
+        var builder = HttpRequest.newBuilder()
+            .uri(URI.create(endpoint(configuration) + path))
+            .timeout(REQUEST_TIMEOUT)
+            .header("Authorization", "Bearer " + accessToken(configuration))
+            .header("Accept", "application/json");
+        return method.apply(builder).build();
+    }
+
+    private String accessToken(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration) throws IOException, InterruptedException {
+        var cacheKey = tokenCacheKey(configuration);
         var now = Instant.now(clockProvider.getClock());
-        if (cached != null && cached.expiresAt().isAfter(now)) {
+        var cached = accessTokens.getIfPresent(cacheKey);
+        if (cached != null && cached.expiresAt().minusSeconds(TOKEN_RENEWAL_MARGIN_SECONDS).isAfter(now)) {
             return cached.value();
         }
+        var clientId = configuration.get(PAYU_CLIENT_ID).getRequiredValue();
+        var clientSecret = configuration.get(PAYU_CLIENT_SECRET).getRequiredValue();
         var form = "grant_type=client_credentials"
             + "&client_id=" + URLEncoder.encode(clientId, StandardCharsets.UTF_8)
             + "&client_secret=" + URLEncoder.encode(clientSecret, StandardCharsets.UTF_8);
         var request = HttpRequest.newBuilder()
-            .uri(URI.create(endpoint + "/pl/standard/user/oauth/authorize"))
+            .uri(URI.create(endpoint(configuration) + "/pl/standard/user/oauth/authorize"))
+            .timeout(REQUEST_TIMEOUT)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .POST(HttpRequest.BodyPublishers.ofString(form))
             .build();
         var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         var body = parseObject(response.body());
-        if (!HttpUtils.callSuccessful(response) || body == null || !body.has("access_token")) {
+        var value = stringOrNull(body, "access_token");
+        if (!HttpUtils.callSuccessful(response) || value == null) {
             throw new IllegalStateException("PayU authorization failed (HTTP " + response.statusCode() + ")");
         }
-        // renew one minute before the actual expiration
-        var expiresAt = now.plusSeconds(Math.max(0, body.get("expires_in").getAsLong() - 60));
-        var token = new AccessToken(body.get("access_token").getAsString(), expiresAt);
+        var token = new AccessToken(value, now.plusSeconds(tokenLifetimeSeconds(body)));
         accessTokens.put(cacheKey, token);
         return token.value();
     }
 
-    private static String endpoint(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration) {
-        if (configuration.get(PAYU_LIVE_MODE).getValueAsBooleanOrDefault()) {
-            return LIVE_ENDPOINT;
+    private static long tokenLifetimeSeconds(JsonObject body) {
+        var expiresIn = stringOrNull(body, "expires_in");
+        if (expiresIn == null) {
+            return DEFAULT_TOKEN_LIFETIME_SECONDS;
         }
-        return SANDBOX_ENDPOINT;
+        try {
+            return Long.parseLong(expiresIn);
+        } catch (NumberFormatException e) {
+            LOGGER.warn("Unexpected PayU token lifetime {}, using {} seconds", expiresIn, DEFAULT_TOKEN_LIFETIME_SECONDS);
+            return DEFAULT_TOKEN_LIFETIME_SECONDS;
+        }
+    }
+
+    /**
+     * The token depends on the endpoint and on the credentials. The secret is hashed, so that it is not kept in clear
+     * as a cache key, and a changed secret gets a new token.
+     */
+    private String tokenCacheKey(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration) {
+        return endpoint(configuration)
+            + "|" + configuration.get(PAYU_CLIENT_ID).getRequiredValue()
+            + "|" + sha256Hex(configuration.get(PAYU_CLIENT_SECRET).getRequiredValue());
+    }
+
+    private static String sha256Hex(String value) {
+        try {
+            var digest = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
+    }
+
+    private String endpoint(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration) {
+        if (configuration.get(PAYU_LIVE_MODE).getValueAsBooleanOrDefault()) {
+            return liveEndpoint;
+        }
+        return sandboxEndpoint;
     }
 
     private static boolean isSuccess(JsonObject body) {
