@@ -152,6 +152,8 @@ class PayUManagerTest {
             return response;
         });
         manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository, TestUtil.clockProvider());
+        // the cancellation is confirmed without really waiting between the re-reads
+        manager.setCancelConfirmationTiming(Duration.ZERO, Duration.ofSeconds(3));
     }
 
     @Test
@@ -689,6 +691,30 @@ class PayUManagerTest {
         assertFalse(manager.discardTransaction(transaction, event));
         // status check, then a bounded number of re-reads
         assertEquals(6, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
+    }
+
+    @Test
+    void cancellationPollingStopsWhenTheNextPauseWouldExceedTheTimeBudget() {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = orderChangingOnDelete("PENDING", "PENDING");
+        manager.setCancelConfirmationTiming(Duration.ofHours(1), Duration.ofSeconds(3));
+
+        var discarded = assertTimeoutPreemptively(Duration.ofSeconds(5), () -> manager.discardTransaction(transaction, event));
+
+        assertFalse(discarded);
+        // status check, then the first re-read: waiting an hour for the next one would exceed the budget
+        assertEquals(2, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
+    }
+
+    @Test
+    void cancellationPollingStopsWhenTheTimeBudgetIsUsedUp() {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = orderCancelledAfterReReads(2);
+        manager.setCancelConfirmationTiming(Duration.ZERO, Duration.ZERO);
+
+        // the order would be CANCELED on the third re-read, but there is no time left after the first one
+        assertFalse(manager.discardTransaction(transaction, event));
+        assertEquals(2, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
     }
 
     @Test

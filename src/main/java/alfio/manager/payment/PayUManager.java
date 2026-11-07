@@ -103,6 +103,8 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     // PayU applies an accepted DELETE asynchronously: the order can still be NEW or PENDING right after it
     private static final int CANCEL_CONFIRMATION_READS = 5;
     private static final Duration CANCEL_CONFIRMATION_PAUSE = Duration.ofMillis(500);
+    // the re-reads run under the reservation lock: the waiting for the cancellation is bounded as a whole
+    private static final Duration CANCEL_CONFIRMATION_BUDGET = Duration.ofSeconds(3);
     // used when the OAuth response has no expires_in
     private static final long DEFAULT_TOKEN_LIFETIME_SECONDS = 300;
     // a cached token is renewed this long before it expires
@@ -123,6 +125,8 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     private final ClockProvider clockProvider;
     private final String sandboxEndpoint;
     private final String liveEndpoint;
+    private Duration cancelConfirmationPause = CANCEL_CONFIRMATION_PAUSE;
+    private Duration cancelConfirmationBudget = CANCEL_CONFIRMATION_BUDGET;
     // PayU tokens last about 12 hours; the entry itself is checked against its expiration (see accessToken)
     private final Cache<String, AccessToken> accessTokens = Caffeine.newBuilder()
         .expireAfterWrite(Duration.ofHours(12))
@@ -161,6 +165,14 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
             this.sandboxEndpoint = SANDBOX_ENDPOINT;
             this.liveEndpoint = LIVE_ENDPOINT;
         }
+    }
+
+    /**
+     * For tests: the pause between the re-reads that confirm a cancellation, and the time budget of those re-reads.
+     */
+    void setCancelConfirmationTiming(Duration pause, Duration budget) {
+        this.cancelConfirmationPause = pause;
+        this.cancelConfirmationBudget = budget;
     }
 
     @Override
@@ -793,11 +805,14 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
      * Cancels a PayU order (DELETE), then always re-reads it to confirm the cancellation.
      * <p>
      * The DELETE response alone proves nothing: PayU answers HTTP 200 with body status SUCCESS even for an order
-     * that is already COMPLETED, and the order stays COMPLETED. The order counts as cancelled only when the re-read
-     * shows it CANCELED or not found, whatever the DELETE answered (including a timeout or an I/O error).
+     * that is already COMPLETED, and the order stays COMPLETED (confirmed on the sandbox). The order counts as
+     * cancelled only when the re-read shows it CANCELED or not found, whatever the DELETE answered (including a
+     * timeout or an I/O error).
      * <p>
-     * PayU applies an accepted DELETE asynchronously, so a NEW or PENDING order is re-read a few times, with a short
-     * pause, before giving up.
+     * On the sandbox, a DELETE of a PENDING order answers SUCCESS and the order becomes CANCELED, and no money is
+     * taken afterwards. PayU applies an accepted DELETE asynchronously, so a NEW or PENDING order is re-read up to
+     * {@value #CANCEL_CONFIRMATION_READS} times, with a short pause, within an overall time budget (the re-reads run
+     * under the reservation lock); when the budget is used up the order is reported as not cancelled.
      */
     private CancelOutcome cancelOrder(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId) {
         boolean deleteAccepted = false;
@@ -816,11 +831,17 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         } catch (Exception e) {
             LOGGER.warn("Unexpected error while cancelling PayU order {}", orderId, e);
         }
+        long pollingStart = System.nanoTime();
         var lookup = retrieveOrder(configuration, orderId);
         int reads = 1;
         while (deleteAccepted && reads < CANCEL_CONFIRMATION_READS && isCancellationInProgress(lookup)) {
+            var elapsed = Duration.ofNanos(System.nanoTime() - pollingStart);
+            if (elapsed.plus(cancelConfirmationPause).compareTo(cancelConfirmationBudget) >= 0) {
+                LOGGER.warn("PayU order {} still not cancelled after {} re-read(s) in {} ms, giving up", orderId, reads, elapsed.toMillis());
+                break;
+            }
             try {
-                Thread.sleep(CANCEL_CONFIRMATION_PAUSE);
+                Thread.sleep(cancelConfirmationPause);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 LOGGER.warn("Interrupted while waiting for the cancellation of PayU order {}", orderId);
