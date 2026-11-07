@@ -226,6 +226,9 @@ docker tag alfio-plo-pl:payu-$(date +%Y%m%d) alfio-plo-pl:payu-$(git rev-parse -
 - The container listens on port 8080. Put it behind an HTTPS reverse proxy and set the proxy read
   timeout to at least 120 s: a payment request holds the reservation lock across several PayU calls
   (10 s timeout each, plus a short wait for an order cancellation to be applied).
+- The proxy must forward `X-Forwarded-Proto: https` and `X-Forwarded-Port: 443` (and `Host`). Outside
+  the dev profile alf.io requires HTTPS: a plain-HTTP request straight to the container port answers
+  HTTP 500 ("does not have a corresponding HTTPS Port"), so always test through the public HTTPS URL.
 - Use `GET /healthz` for the container and load-balancer health checks.
 
 #### PayU configuration
