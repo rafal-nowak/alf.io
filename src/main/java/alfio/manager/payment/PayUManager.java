@@ -251,7 +251,7 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
                 if (cancelOrder(configuration, orderId) == CancelOutcome.CANCELLED) {
                     return Optional.empty();
                 }
-                LOGGER.warn("PayU order {} is still NEW and could not be cancelled, not creating a new one", orderId);
+                LOGGER.warn("PayU order {} was NEW and is not confirmed cancelled, not creating a new one (the next check settles it)", orderId);
                 return Optional.of(PaymentResult.pending(orderId));
             }
             case "WAITING_FOR_CONFIRMATION":
@@ -591,7 +591,7 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
                 return true;
             case "NEW":
             case "PENDING":
-                // DELETE on a PENDING order: to be verified on the sandbox. A refusal leaves the order not cancelled.
+                // DELETE cancels a NEW or PENDING order; cancelOrder confirms it by re-reading the order
                 return cancelOrder(configuration, orderId) == CancelOutcome.CANCELLED;
             default:
                 LOGGER.warn("PayU order {} is {}, not discarding transaction {}", orderId, status, transaction.getId());
@@ -787,17 +787,20 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     }
 
     /**
-     * Cancels a PayU order (DELETE). The order counts as cancelled when the response body has status SUCCESS,
-     * whatever the HTTP code, or when a re-read shows it CANCELED or not found.
+     * Cancels a PayU order (DELETE), then always re-reads it to confirm the cancellation.
+     * <p>
+     * The DELETE response alone proves nothing: PayU answers HTTP 200 with body status SUCCESS even for an order
+     * that is already COMPLETED, and the order stays COMPLETED. The order counts as cancelled only when the re-read
+     * shows it CANCELED or not found, whatever the DELETE answered (including a timeout or an I/O error).
      */
     private CancelOutcome cancelOrder(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId) {
         try {
             var response = sendAuthorized(configuration, "/api/v2_1/orders/" + orderId, HttpRequest.Builder::DELETE);
-            if (isSuccess(parseObject(response.body()))) {
-                return CancelOutcome.CANCELLED;
+            if (!isSuccess(parseObject(response.body()))) {
+                LOGGER.warn("PayU did not accept the cancellation of order {}: status {}, body {}", orderId, response.statusCode(), response.body());
             }
-            LOGGER.warn("PayU did not confirm the cancellation of order {}: status {}, body {}", orderId, response.statusCode(), response.body());
         } catch (InterruptedException e) {
+            // the re-read could not run on an interrupted thread: the order may still be payable
             Thread.currentThread().interrupt();
             LOGGER.warn("Interrupted while cancelling PayU order {}", orderId);
             return CancelOutcome.NOT_CANCELLED;
@@ -808,10 +811,19 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         if (lookup.outcome() == OrderLookupOutcome.NOT_FOUND) {
             return CancelOutcome.CANCELLED;
         }
-        if (lookup.outcome() == OrderLookupOutcome.FOUND && "CANCELED".equals(orderStatus(lookup.order()))) {
-            return CancelOutcome.CANCELLED;
+        if (lookup.outcome() == OrderLookupOutcome.FOUND) {
+            var status = orderStatus(lookup.order());
+            if ("CANCELED".equals(status)) {
+                return CancelOutcome.CANCELLED;
+            }
+            if ("COMPLETED".equals(status)) {
+                LOGGER.error("PayU order {} is COMPLETED after the cancellation request: it was paid and is not cancelled", orderId);
+                return CancelOutcome.NOT_CANCELLED;
+            }
+            LOGGER.warn("PayU order {} is {} after the cancellation request, not cancelled", orderId, status);
+            return CancelOutcome.NOT_CANCELLED;
         }
-        LOGGER.warn("PayU order {} is not cancelled", orderId);
+        LOGGER.warn("Cannot re-read PayU order {} after the cancellation request, assuming it is not cancelled", orderId);
         return CancelOutcome.NOT_CANCELLED;
     }
 

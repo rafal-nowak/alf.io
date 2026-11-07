@@ -96,6 +96,8 @@ class PayUReservationFlowIntegrationTest extends BaseReservationFlowTest {
     private static final String ORDERS_PATH = "/api/v2_1/orders";
     private static final String REDIRECT_URI = "https://merch-prod.snd.payu.com/pay/?orderId=";
     private static final String ORDER_ID = "orderId";
+    private static final String CANCELLATION_SCENARIO = "order cancellation";
+    private static final String ORDER_CANCELLED_STATE = "cancelled";
     private static final WireMockServer PAYU = startPayUServer();
 
     @Autowired
@@ -151,8 +153,15 @@ class PayUReservationFlowIntegrationTest extends BaseReservationFlowTest {
         var reservationId = reserveAndMoveToOverview(event);
         var orderId = startPayUPayment(reservationId);
         stubOrder(orderId, reservationId, "NEW");
+        // the DELETE cancels the order: the re-read that confirms the cancellation shows it CANCELED
         PAYU.stubFor(delete(urlEqualTo(ORDERS_PATH + "/" + orderId))
+            .inScenario(CANCELLATION_SCENARIO)
+            .willSetStateTo(ORDER_CANCELLED_STATE)
             .willReturn(okJson(successStatus(orderId).toString())));
+        PAYU.stubFor(get(urlEqualTo(ORDERS_PATH + "/" + orderId))
+            .inScenario(CANCELLATION_SCENARIO)
+            .whenScenarioStateIs(ORDER_CANCELLED_STATE)
+            .willReturn(okJson(orderLookupBody(orderId, reservationId, "CANCELED"))));
 
         var redirect = payUCallbackController.payuReturn(PurchaseContextType.event, event.getShortName(), reservationId, "501", null);
 
@@ -460,7 +469,23 @@ class PayUReservationFlowIntegrationTest extends BaseReservationFlowTest {
      * @return the extOrderId of the order
      */
     private static String stubOrder(String orderId, String reservationId, String status, String totalAmount) {
-        var orderRequest = JsonParser.parseString(PAYU.findAll(postRequestedFor(urlEqualTo(ORDERS_PATH))).getLast().getBodyAsString()).getAsJsonObject();
+        PAYU.stubFor(get(urlEqualTo(ORDERS_PATH + "/" + orderId)).willReturn(okJson(orderLookupBody(orderId, reservationId, status, totalAmount))));
+        return lastOrderRequest().get("extOrderId").getAsString();
+    }
+
+    private static JsonObject lastOrderRequest() {
+        return JsonParser.parseString(PAYU.findAll(postRequestedFor(urlEqualTo(ORDERS_PATH))).getLast().getBodyAsString()).getAsJsonObject();
+    }
+
+    private static String orderLookupBody(String orderId, String reservationId, String status) {
+        return orderLookupBody(orderId, reservationId, status, lastOrderRequest().get("totalAmount").getAsString());
+    }
+
+    /**
+     * Body of GET /api/v2_1/orders/{orderId} for the last order created.
+     */
+    private static String orderLookupBody(String orderId, String reservationId, String status, String totalAmount) {
+        var orderRequest = lastOrderRequest();
         var extOrderId = orderRequest.get("extOrderId").getAsString();
         var order = new JsonObject();
         order.addProperty(ORDER_ID, orderId);
@@ -473,8 +498,7 @@ class PayUReservationFlowIntegrationTest extends BaseReservationFlowTest {
         orders.add(order);
         var body = successStatus(null);
         body.add("orders", orders);
-        PAYU.stubFor(get(urlEqualTo(ORDERS_PATH + "/" + orderId)).willReturn(okJson(body.toString())));
-        return extOrderId;
+        return body.toString();
     }
 
     private static JsonObject successStatus(String orderId) {

@@ -346,6 +346,32 @@ class PayUManagerTest {
     }
 
     @Test
+    void reconfirmNewOrderWhoseDeleteSucceedsButReReadShowsCompletedStaysPending() throws Exception {
+        givenExistingTransaction();
+        // the buyer paid between the GET and the DELETE: PayU answers SUCCESS but the order stays COMPLETED
+        existingOrderApi = orderChangingOnDelete("NEW", "COMPLETED");
+
+        assertEquals(PaymentResult.pending(OLD_ORDER_ID), manager.doPayment(spec(null, null)));
+
+        assertTrue(requestSent("DELETE", "/api/v2_1/orders/" + OLD_ORDER_ID));
+        assertEquals(2, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
+        assertFalse(orderCreationAttempted());
+        verify(transactionRepository, never()).invalidateForReservation(any(), any());
+        verify(transactionRepository, never()).invalidateById(anyInt());
+    }
+
+    @Test
+    void reconfirmNewOrderWhoseDeleteSucceedsAndReReadShowsCanceledCreatesNewOrder() throws Exception {
+        givenExistingTransaction();
+        existingOrderApi = orderChangingOnDelete("NEW", "CANCELED");
+
+        assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+
+        assertEquals(2, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
+        assertEquals(1, requestCount("POST", "/api/v2_1/orders"));
+    }
+
+    @Test
     void reconfirmNewOrderThatCannotBeCancelledStaysPending() throws Exception {
         givenExistingTransaction();
         existingOrderApi = request -> {
@@ -409,6 +435,10 @@ class PayUManagerTest {
                     return new Reply(401, "{\"error\":\"invalid_token\"}");
                 }
                 return new Reply(200, "{\"status\":{\"statusCode\":\"SUCCESS\"}}");
+            }
+            // the re-read after the accepted DELETE confirms the cancellation
+            if (deletes[0] == 2) {
+                return orderLookup("CANCELED", "1000", "PLN", EXISTING_EXT_ORDER_ID);
             }
             return orderLookup("NEW", "1000", "PLN", EXISTING_EXT_ORDER_ID);
         };
@@ -598,9 +628,15 @@ class PayUManagerTest {
     })
     void discardTransactionFollowsOrderState(String state, boolean expectedResult, boolean deleteExpected) throws Exception {
         var transaction = givenExistingTransaction();
+        var deleted = new boolean[] {false};
         existingOrderApi = request -> {
             if ("DELETE".equals(request.method())) {
+                deleted[0] = true;
                 return new Reply(200, "{\"status\":{\"statusCode\":\"SUCCESS\"}}");
+            }
+            // the re-read after the DELETE confirms the cancellation
+            if (deleted[0]) {
+                return orderLookup("CANCELED", "1000", "PLN", EXISTING_EXT_ORDER_ID);
             }
             if ("READ_ERROR".equals(state)) {
                 return new Reply(503, "Service Unavailable");
@@ -613,6 +649,25 @@ class PayUManagerTest {
 
         assertEquals(expectedResult, manager.discardTransaction(transaction, event), state);
         assertEquals(deleteExpected, requestSent("DELETE", "/api/v2_1/orders/" + OLD_ORDER_ID), state);
+    }
+
+    @Test
+    void discardTransactionIsFalseWhenDeleteSucceedsButReReadShowsCompleted() throws Exception {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = orderChangingOnDelete("PENDING", "COMPLETED");
+
+        assertFalse(manager.discardTransaction(transaction, event));
+        assertTrue(requestSent("DELETE", "/api/v2_1/orders/" + OLD_ORDER_ID));
+        assertEquals(2, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
+    }
+
+    @Test
+    void discardTransactionIsTrueWhenDeleteSucceedsAndReReadShowsCanceled() throws Exception {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = orderChangingOnDelete("PENDING", "CANCELED");
+
+        assertTrue(manager.discardTransaction(transaction, event));
+        assertEquals(2, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
     }
 
     @Test
@@ -783,13 +838,8 @@ class PayUManagerTest {
     @Test
     void everyRequestHasTenSecondTimeout() throws Exception {
         var transaction = givenExistingTransaction();
-        existingOrderApi = request -> {
-            if (!"GET".equals(request.method())) {
-                return new Reply(200, "{\"status\":{\"statusCode\":\"SUCCESS\"}}");
-            }
-            return orderLookup("NEW", "1000", "PLN", EXISTING_EXT_ORDER_ID);
-        };
-        // OAuth, GET, DELETE, POST order
+        existingOrderApi = orderChangingOnDelete("NEW", "CANCELED");
+        // OAuth, GET, DELETE, GET re-read, POST order
         assertTrue(manager.doPayment(spec(null, null)).isRedirect());
         // PUT capture, then a refund POST
         existingOrderApi = request -> {
@@ -1022,6 +1072,25 @@ class PayUManagerTest {
     }
 
     private record Reply(int status, String body) {
+    }
+
+    /**
+     * PayU order whose GET shows {@code statusBeforeDelete} until a DELETE is received, and
+     * {@code statusAfterDelete} afterwards. Every DELETE answers HTTP 200 with body status SUCCESS, as the sandbox
+     * does even for an order that is already COMPLETED.
+     */
+    private static ExistingOrderApi orderChangingOnDelete(String statusBeforeDelete, String statusAfterDelete) {
+        var deleted = new boolean[] {false};
+        return request -> {
+            if ("DELETE".equals(request.method())) {
+                deleted[0] = true;
+                return new Reply(200, "{\"status\":{\"statusCode\":\"SUCCESS\"}}");
+            }
+            if (deleted[0]) {
+                return orderLookup(statusAfterDelete, "1000", "PLN", EXISTING_EXT_ORDER_ID);
+            }
+            return orderLookup(statusBeforeDelete, "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        };
     }
 
     private void stubReservationValidity(Date validity) {
