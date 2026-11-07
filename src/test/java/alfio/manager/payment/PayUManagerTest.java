@@ -671,6 +671,27 @@ class PayUManagerTest {
     }
 
     @Test
+    void discardTransactionWaitsForAnAcceptedCancellationToBeApplied() throws Exception {
+        var transaction = givenExistingTransaction();
+        // the sandbox applies an accepted DELETE asynchronously: the order is still PENDING right after it
+        existingOrderApi = orderCancelledAfterReReads(2);
+
+        assertTrue(manager.discardTransaction(transaction, event));
+        // status check, then two re-reads still PENDING and the one that shows CANCELED
+        assertEquals(4, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
+    }
+
+    @Test
+    void discardTransactionGivesUpWhenAnAcceptedCancellationIsNeverApplied() throws Exception {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = orderChangingOnDelete("PENDING", "PENDING");
+
+        assertFalse(manager.discardTransaction(transaction, event));
+        // status check, then a bounded number of re-reads
+        assertEquals(6, requestCount("GET", "/api/v2_1/orders/" + OLD_ORDER_ID));
+    }
+
+    @Test
     void discardTransactionIsFalseWhenDeleteIsRefused() throws Exception {
         var transaction = givenExistingTransaction();
         existingOrderApi = request -> {
@@ -1090,6 +1111,28 @@ class PayUManagerTest {
                 return orderLookup(statusAfterDelete, "1000", "PLN", EXISTING_EXT_ORDER_ID);
             }
             return orderLookup(statusBeforeDelete, "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        };
+    }
+
+    /**
+     * PayU order that is PENDING until a DELETE is received, and stays PENDING for the first
+     * {@code pendingReReads} reads after it before showing CANCELED.
+     */
+    private static ExistingOrderApi orderCancelledAfterReReads(int pendingReReads) {
+        var deleted = new boolean[] {false};
+        var readsAfterDelete = new int[] {0};
+        return request -> {
+            if ("DELETE".equals(request.method())) {
+                deleted[0] = true;
+                return new Reply(200, "{\"status\":{\"statusCode\":\"SUCCESS\"}}");
+            }
+            if (deleted[0]) {
+                readsAfterDelete[0]++;
+                if (readsAfterDelete[0] > pendingReReads) {
+                    return orderLookup("CANCELED", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+                }
+            }
+            return orderLookup("PENDING", "1000", "PLN", EXISTING_EXT_ORDER_ID);
         };
     }
 

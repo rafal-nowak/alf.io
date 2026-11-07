@@ -100,6 +100,9 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     private static final long RESERVATION_VALIDITY_SLACK_SECONDS = 300;
     // every PayU call runs under the reservation lock: keep the worst case short (spec L7)
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    // PayU applies an accepted DELETE asynchronously: the order can still be NEW or PENDING right after it
+    private static final int CANCEL_CONFIRMATION_READS = 5;
+    private static final Duration CANCEL_CONFIRMATION_PAUSE = Duration.ofMillis(500);
     // used when the OAuth response has no expires_in
     private static final long DEFAULT_TOKEN_LIFETIME_SECONDS = 300;
     // a cached token is renewed this long before it expires
@@ -792,11 +795,17 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
      * The DELETE response alone proves nothing: PayU answers HTTP 200 with body status SUCCESS even for an order
      * that is already COMPLETED, and the order stays COMPLETED. The order counts as cancelled only when the re-read
      * shows it CANCELED or not found, whatever the DELETE answered (including a timeout or an I/O error).
+     * <p>
+     * PayU applies an accepted DELETE asynchronously, so a NEW or PENDING order is re-read a few times, with a short
+     * pause, before giving up.
      */
     private CancelOutcome cancelOrder(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId) {
+        boolean deleteAccepted = false;
         try {
             var response = sendAuthorized(configuration, "/api/v2_1/orders/" + orderId, HttpRequest.Builder::DELETE);
-            if (!isSuccess(parseObject(response.body()))) {
+            if (isSuccess(parseObject(response.body()))) {
+                deleteAccepted = true;
+            } else {
                 LOGGER.warn("PayU did not accept the cancellation of order {}: status {}, body {}", orderId, response.statusCode(), response.body());
             }
         } catch (InterruptedException e) {
@@ -808,12 +817,25 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
             LOGGER.warn("Unexpected error while cancelling PayU order {}", orderId, e);
         }
         var lookup = retrieveOrder(configuration, orderId);
+        int reads = 1;
+        while (deleteAccepted && reads < CANCEL_CONFIRMATION_READS && isCancellationInProgress(lookup)) {
+            try {
+                Thread.sleep(CANCEL_CONFIRMATION_PAUSE);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                LOGGER.warn("Interrupted while waiting for the cancellation of PayU order {}", orderId);
+                return CancelOutcome.NOT_CANCELLED;
+            }
+            lookup = retrieveOrder(configuration, orderId);
+            reads++;
+        }
         if (lookup.outcome() == OrderLookupOutcome.NOT_FOUND) {
             return CancelOutcome.CANCELLED;
         }
         if (lookup.outcome() == OrderLookupOutcome.FOUND) {
             var status = orderStatus(lookup.order());
             if ("CANCELED".equals(status)) {
+                LOGGER.debug("PayU order {} confirmed cancelled after {} re-read(s)", orderId, reads);
                 return CancelOutcome.CANCELLED;
             }
             if ("COMPLETED".equals(status)) {
@@ -825,6 +847,17 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         }
         LOGGER.warn("Cannot re-read PayU order {} after the cancellation request, assuming it is not cancelled", orderId);
         return CancelOutcome.NOT_CANCELLED;
+    }
+
+    /**
+     * An accepted cancellation is still being applied while the order is NEW or PENDING.
+     */
+    private boolean isCancellationInProgress(OrderLookup lookup) {
+        if (lookup.outcome() != OrderLookupOutcome.FOUND) {
+            return false;
+        }
+        var status = orderStatus(lookup.order());
+        return "NEW".equals(status) || "PENDING".equals(status);
     }
 
     private void confirmOrder(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId) {
