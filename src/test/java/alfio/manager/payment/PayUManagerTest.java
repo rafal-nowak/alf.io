@@ -980,19 +980,41 @@ class PayUManagerTest {
     void endpointOverrideReplacesPayUEndpoints() throws Exception {
         var transaction = givenExistingTransaction();
         existingOrderApi = request -> orderLookup("CANCELED", "1000", "PLN", EXISTING_EXT_ORDER_ID);
-        for (var liveMode : List.of("false", "true")) {
-            configuration.put(PAYU_LIVE_MODE, existing(PAYU_LIVE_MODE, liveMode));
-            manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository,
-                TestUtil.clockProvider(), "http://localhost:1234/");
-            assertTrue(manager.doPayment(spec(null, null)).isRedirect());
-            manager.discardTransaction(transaction, event);
-        }
+        manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository,
+            TestUtil.clockProvider(), "http://localhost:1234/");
+        assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+        manager.discardTransaction(transaction, event);
 
         var requests = sentRequests();
         assertFalse(requests.isEmpty());
         for (var request : requests) {
             assertTrue(request.uri().toString().startsWith("http://localhost:1234/"), request.uri().toString());
             assertFalse(request.uri().toString().startsWith("http://localhost:1234//"), request.uri().toString());
+        }
+    }
+
+    @Test
+    void endpointOverrideIsIgnoredInLiveMode() throws Exception {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = request -> orderLookup("CANCELED", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        configuration.put(PAYU_LIVE_MODE, existing(PAYU_LIVE_MODE, "true"));
+
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository,
+                TestUtil.clockProvider(), "http://localhost:1234/");
+            assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+            manager.discardTransaction(transaction, event);
+
+            var errors = logs.messages(Level.ERROR);
+            assertEquals(1, errors.size(), errors.toString());
+            assertTrue(errors.get(0).contains("live mode"), errors.get(0));
+        }
+
+        var requests = sentRequests();
+        assertTrue(requests.size() > 2);
+        for (var request : requests) {
+            // the credentials (OAuth) and every API call go to the live PayU endpoint, never to the override
+            assertTrue(request.uri().toString().startsWith("https://secure.payu.com/"), request.uri().toString());
         }
     }
 

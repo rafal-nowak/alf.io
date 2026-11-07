@@ -65,6 +65,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZonedDateTime;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.UnaryOperator;
 
 import static alfio.manager.payment.PaymentManagerUtils.invalidateExistingTransactions;
@@ -125,8 +126,9 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     private final TicketReservationRepository ticketReservationRepository;
     private final TransactionRepository transactionRepository;
     private final ClockProvider clockProvider;
-    private final String sandboxEndpoint;
-    private final String liveEndpoint;
+    // hidden test property, never used in live mode; null when not set
+    private final String endpointOverride;
+    private final AtomicBoolean liveOverrideReported = new AtomicBoolean(false);
     private Duration cancelConfirmationPause = CANCEL_CONFIRMATION_PAUSE;
     private Duration cancelConfirmationBudget = CANCEL_CONFIRMATION_BUDGET;
     // PayU tokens last about 12 hours; the entry itself is checked against its expiration (see accessToken)
@@ -144,7 +146,8 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     }
 
     /**
-     * @param endpointOverride hidden property for tests: when set, every PayU call (sandbox and live) goes to this URL
+     * @param endpointOverride hidden property for tests: when set, every sandbox PayU call goes to this URL. It is
+     *                         ignored in live mode, so that live credentials are never sent to another host.
      */
     @Autowired
     public PayUManager(ConfigurationManager configurationManager,
@@ -159,13 +162,10 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         this.transactionRepository = transactionRepository;
         this.clockProvider = clockProvider;
         if (StringUtils.isNotBlank(endpointOverride)) {
-            var override = Strings.CS.removeEnd(endpointOverride.trim(), "/");
-            LOGGER.warn("PayU endpoint overridden: every PayU call goes to {}", override);
-            this.sandboxEndpoint = override;
-            this.liveEndpoint = override;
+            this.endpointOverride = Strings.CS.removeEnd(endpointOverride.trim(), "/");
+            LOGGER.warn("PayU endpoint overridden: every sandbox PayU call goes to {} (ignored in live mode)", this.endpointOverride);
         } else {
-            this.sandboxEndpoint = SANDBOX_ENDPOINT;
-            this.liveEndpoint = LIVE_ENDPOINT;
+            this.endpointOverride = null;
         }
     }
 
@@ -1017,11 +1017,22 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         }
     }
 
+    /**
+     * The endpoint override applies to the sandbox only: in live mode the live endpoint is always used, so that live
+     * credentials never reach another host. The ignored override is logged as an error once.
+     */
     private String endpoint(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration) {
         if (configuration.get(PAYU_LIVE_MODE).getValueAsBooleanOrDefault()) {
-            return liveEndpoint;
+            if (endpointOverride != null && liveOverrideReported.compareAndSet(false, true)) {
+                LOGGER.error("PayU endpoint override {} is set but PayU is in live mode: the override is ignored and {} is used. Remove alfio.payu.endpoint-override",
+                    endpointOverride, LIVE_ENDPOINT);
+            }
+            return LIVE_ENDPOINT;
         }
-        return sandboxEndpoint;
+        if (endpointOverride != null) {
+            return endpointOverride;
+        }
+        return SANDBOX_ENDPOINT;
     }
 
     private static boolean isSuccess(JsonObject body) {
