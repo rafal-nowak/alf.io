@@ -19,6 +19,7 @@ package alfio.util;
 import alfio.model.ContentLanguage;
 import alfio.model.Event;
 import org.apache.commons.collections4.IteratorUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.security.core.Authentication;
@@ -71,6 +72,23 @@ public class RequestUtils {
             return remoteAddress.trim();
         }
         return LOOPBACK_IP;
+    }
+
+    private static final int LOGGED_VALUE_MAX_LENGTH = 64;
+    private static final Pattern CONTROL_CHARACTERS = Pattern.compile("[\\p{Cc}\\u2028\\u2029]");
+
+    /**
+     * Makes a value received from a request safe to log: control characters (CR and LF included) are replaced,
+     * so that the value cannot forge log lines, and it is abbreviated to {@value #LOGGED_VALUE_MAX_LENGTH} characters.
+     *
+     * @return the sanitized value, or null when {@code value} is null
+     */
+    public static String sanitizeForLog(String value) {
+        if (value == null) {
+            return null;
+        }
+        String withoutControlCharacters = CONTROL_CHARACTERS.matcher(value).replaceAll("_");
+        return StringUtils.abbreviate(withoutControlCharacters, LOGGED_VALUE_MAX_LENGTH);
     }
 
     private static final Pattern SOCIAL_MEDIA_UA = Pattern.compile("facebookexternalhit/|XING-contenttabreceiver/|LinkedInBot/|Twitterbot/|WhatsApp|Slackbot|TelegramBot");

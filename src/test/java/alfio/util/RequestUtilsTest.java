@@ -55,4 +55,13 @@ public class RequestUtilsTest {
         request.setRemoteAddr(" ");
         Assertions.assertEquals("127.0.0.1", RequestUtils.getClientIp(request));
     }
+
+    @Test
+    public void valueForLogHasNoControlCharactersAndIsAbbreviated() {
+        Assertions.assertNull(RequestUtils.sanitizeForLog(null));
+        Assertions.assertEquals("501__INFO forged_", RequestUtils.sanitizeForLog("501\r\nINFO forged\u0007"));
+        var sanitized = RequestUtils.sanitizeForLog("x".repeat(200));
+        Assertions.assertEquals(64, sanitized.length());
+        Assertions.assertTrue(sanitized.endsWith("..."));
+    }
 }

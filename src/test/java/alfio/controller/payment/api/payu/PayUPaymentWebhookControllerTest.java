@@ -23,6 +23,8 @@ import alfio.manager.support.PaymentWebhookResult;
 import alfio.model.PurchaseContext;
 import alfio.model.transaction.PaymentContext;
 import alfio.model.transaction.PaymentProxy;
+import alfio.test.util.LogCapture;
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -33,6 +35,8 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -73,11 +77,12 @@ class PayUPaymentWebhookControllerTest {
     }
 
     @Test
-    void errorAnswersInternalServerErrorWithReason() {
-        mockResult(PaymentWebhookResult.error("invalid signature"));
+    void errorAnswersInternalServerErrorWithGenericBody() {
+        mockResult(PaymentWebhookResult.error("cannot retrieve PayU order ORDER-1"));
         var response = controller.receivePaymentNotification(request(BODY, "OpenPayu-Signature", SIGNATURE), RESERVATION_ID);
         assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
-        assertEquals("invalid signature", response.getBody());
+        // the reason is logged, never sent back to the caller
+        assertEquals("NOK", response.getBody());
     }
 
     @Test
@@ -95,6 +100,22 @@ class PayUPaymentWebhookControllerTest {
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals("NOT_RELEVANT", response.getBody());
         verify(ticketReservationManager, never()).processTransactionWebhook(anyString(), any(), any(), anyMap(), any());
+    }
+
+    @Test
+    void unsignedOrderIdIsSanitizedBeforeLogging() {
+        when(purchaseContextManager.findByReservationId(RESERVATION_ID)).thenReturn(Optional.empty());
+        var forgedOrderId = "ORDER-1\\r\\nINFO forged log line " + "x".repeat(200);
+        var body = "{\"order\":{\"orderId\":\"" + forgedOrderId + "\",\"status\":\"NEW\"}}";
+        try (var logs = LogCapture.of(PayUPaymentWebhookController.class)) {
+            controller.receivePaymentNotification(request(body, "OpenPayu-Signature", SIGNATURE), RESERVATION_ID);
+
+            var warnings = logs.messages(Level.WARN);
+            assertEquals(1, warnings.size(), warnings.toString());
+            assertFalse(warnings.get(0).contains("\r") || warnings.get(0).contains("\n"), warnings.get(0));
+            assertFalse(warnings.get(0).contains("x".repeat(100)), warnings.get(0));
+            assertTrue(warnings.get(0).contains("ORDER-1"), warnings.get(0));
+        }
     }
 
     @Test

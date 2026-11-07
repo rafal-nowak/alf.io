@@ -61,7 +61,9 @@ public class PayUPaymentWebhookController {
         var content = body.get();
         var purchaseContext = purchaseContextManager.findByReservationId(reservationId);
         if (purchaseContext.isEmpty()) {
-            log.warn("Received PayU notification for unknown reservation {} (orderId: {})", reservationId, extractOrderId(content));
+            // the body is not verified here (the signature is checked only for a known reservation)
+            log.warn("Received PayU notification for unknown reservation {} (orderId: {})", reservationId,
+                RequestUtils.sanitizeForLog(extractOrderId(content)));
             return ResponseEntity.ok(NOT_RELEVANT);
         }
         var result = ticketReservationManager.processTransactionWebhook(content, readSignature(request), PaymentProxy.PAYU,
@@ -69,7 +71,9 @@ public class PayUPaymentWebhookController {
         if (result.isSuccessful()) {
             return ResponseEntity.ok("OK");
         } else if (result.isError()) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(result.getReason());
+            // PayU retries the notification; the reason stays in the logs
+            log.warn("PayU notification for reservation {} could not be processed: {}", reservationId, result.getReason());
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("NOK");
         }
         return ResponseEntity.ok(result.getReason());
     }

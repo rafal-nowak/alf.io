@@ -33,10 +33,12 @@ import alfio.model.transaction.TransactionWebhookPayload;
 import alfio.model.transaction.webhook.PayUWebhookPayload;
 import alfio.repository.TicketReservationRepository;
 import alfio.repository.TransactionRepository;
+import alfio.test.util.LogCapture;
 import alfio.test.util.TestUtil;
 import alfio.util.ClockProvider;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -505,6 +507,30 @@ class PayUManagerTest {
         verify(transactionRepository, never()).insert(any(), any(), any(), any(), anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
     }
 
+    @Test
+    void successfulCreationWithoutOrderIdOrRedirectUriFailsAndRecordsNothing() {
+        var replies = List.of(
+            "{\"status\":{\"statusCode\":\"SUCCESS\"},\"redirectUri\":\"https://payu.example/pay\"}",
+            "{\"status\":{\"statusCode\":\"SUCCESS\"},\"orderId\":\"ORDER1\"}");
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            for (var reply : replies) {
+                orderCreationApi = request -> new Reply(302, reply);
+
+                var result = assertDoesNotThrow(() -> manager.doPayment(spec(null, null)));
+
+                assertTrue(result.isFailed(), reply);
+                assertEquals(Optional.of("error.STEP2_PAYU_unexpected"), result.getErrorCode());
+            }
+            var errors = logs.messages(Level.ERROR);
+            assertEquals(2, errors.size(), errors.toString());
+            assertTrue(errors.stream().allMatch(m -> m.contains(RESERVATION_ID) && m.contains("no orderId or redirectUri")), errors.toString());
+        }
+        verify(ticketReservationRepository, never()).updateReservationStatus(any(), any());
+        verify(ticketReservationRepository, never()).updateValidity(any(), any());
+        verify(transactionRepository, never()).invalidateForReservation(any(), any());
+        verify(transactionRepository, never()).insert(any(), any(), any(), any(), anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
+    }
+
     // --- status mapping: webhook and force-check (spec §3) ---
 
     @Test
@@ -530,6 +556,21 @@ class PayUManagerTest {
 
         assertEquals(PaymentWebhookResult.Type.ERROR, webhook.getType());
         assertEquals(PaymentWebhookResult.Type.ERROR, forced.getType());
+        verify(transactionRepository, never()).update(anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void completedOrderWithoutExtOrderIdIsAMismatch() throws Exception {
+        var transaction = givenExistingTransaction();
+        existingOrderApi = request -> new Reply(200, "{\"orders\":[{\"orderId\":\"" + OLD_ORDER_ID
+            + "\",\"totalAmount\":\"1000\",\"currencyCode\":\"PLN\",\"status\":\"COMPLETED\"}],\"status\":{\"statusCode\":\"SUCCESS\"}}");
+
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            var result = manager.processWebhook(webhookPayload("COMPLETED"), transaction, new PaymentContext(event));
+
+            assertEquals(PaymentWebhookResult.Type.ERROR, result.getType());
+            assertEquals(1, logs.messages(Level.ERROR).size(), logs.messages(Level.ERROR).toString());
+        }
         verify(transactionRepository, never()).update(anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
     }
 

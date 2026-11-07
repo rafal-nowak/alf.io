@@ -20,6 +20,7 @@ import alfio.manager.PurchaseContextManager;
 import alfio.manager.TicketReservationManager;
 import alfio.manager.payment.PayUManager;
 import alfio.model.PurchaseContext;
+import alfio.util.RequestUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Controller;
@@ -70,7 +71,8 @@ public class PayUCallbackController {
         var reservation = optionalReservation.get();
         boolean errorPresent = error != null;
         if (errorPresent) {
-            log.info("PayU returned with error {} (errorCode {}) for reservation {}", error, errorCode, reservationId);
+            log.info("PayU returned with error {} (errorCode {}) for reservation {}",
+                RequestUtils.sanitizeForLog(error), RequestUtils.sanitizeForLog(errorCode), reservationId);
             if (ticketReservationManager.cancelPendingPayment(reservationId, purchaseContext)) {
                 return overviewWithCancellation(type, identifier, reservationId);
             }

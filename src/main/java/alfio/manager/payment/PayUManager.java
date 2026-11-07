@@ -93,7 +93,7 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     static final String LIVE_ENDPOINT = "https://secure.payu.com";
     private static final String EXT_ORDER_ID = "extOrderId";
     private static final String DEFAULT_CUSTOMER_IP = "127.0.0.1";
-    // PayU status code for an unknown order (to be verified on the sandbox)
+    // PayU answers HTTP 404 with this status code for an unknown order (confirmed on the sandbox)
     private static final String ORDER_NOT_FOUND_STATUS = "DATA_NOT_FOUND";
     private static final int MIN_VALIDITY_SECONDS = 300;
     private static final int DEFAULT_RESERVATION_TIMEOUT_MINUTES = 25;
@@ -290,9 +290,8 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
         var actualCurrency = stringOrNull(order, "currencyCode");
         var expectedExtOrderId = metadataValue(transaction, EXT_ORDER_ID);
         var actualExtOrderId = stringOrNull(order, EXT_ORDER_ID);
-        boolean extOrderIdMatches = expectedExtOrderId == null
-            || actualExtOrderId == null
-            || expectedExtOrderId.equals(actualExtOrderId);
+        // an order without extOrderId cannot be proven to belong to a transaction that has one
+        boolean extOrderIdMatches = expectedExtOrderId == null || expectedExtOrderId.equals(actualExtOrderId);
         boolean matches = expectedAmount.equals(actualAmount)
             && transaction.getCurrency() != null
             && transaction.getCurrency().equals(actualCurrency)
@@ -333,11 +332,18 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(orderBody.toString())));
             var responseBody = parseObject(response.body());
-            if (!isSuccess(responseBody) || responseBody == null || !responseBody.has("redirectUri")) {
+            if (!isSuccess(responseBody)) {
                 LOGGER.warn("PayU order creation failed with status {}, body {}", response.statusCode(), response.body());
                 return PaymentResult.failed("error.STEP2_PAYU_unexpected");
             }
-            var orderId = responseBody.get("orderId").getAsString();
+            var orderId = stringOrNull(responseBody, "orderId");
+            var redirectUri = stringOrNull(responseBody, "redirectUri");
+            if (orderId == null || redirectUri == null) {
+                // PayU may have created an order that alf.io cannot track: it expires unpaid, as the buyer never gets its link
+                LOGGER.error("PayU accepted the order {} of reservation {} but its response has no orderId or redirectUri (orderId {}): status {}, body {}",
+                    extOrderId, reservationId, orderId, response.statusCode(), response.body());
+                return PaymentResult.failed("error.STEP2_PAYU_unexpected");
+            }
             ticketReservationRepository.updateReservationStatus(reservationId, EXTERNAL_PROCESSING_PAYMENT.toString());
             // keep the reservation alive while the PayU order can still be paid
             ticketReservationRepository.updateValidity(reservationId, Date.from(now.plusSeconds(validityTime + RESERVATION_VALIDITY_SLACK_SECONDS)));
@@ -346,7 +352,7 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
                 ZonedDateTime.now(clockProvider.withZone(purchaseContext.getZoneId())),
                 spec.getPriceWithVAT(), purchaseContext.getCurrency(), "PayU payment",
                 PaymentProxy.PAYU.name(), 0L, 0L, Transaction.Status.PENDING, Map.of(EXT_ORDER_ID, extOrderId));
-            return PaymentResult.redirect(responseBody.get("redirectUri").getAsString());
+            return PaymentResult.redirect(redirectUri);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             LOGGER.error("PayU order creation interrupted", e);
@@ -440,8 +446,8 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
      * PayU requires the buyer's IP address. The controller puts it in the payment specification; when it is missing
      * (for example, a payment not started from the public frontend), the loopback address is sent.
      * <p>
-     * PayU refuses (INVALID_CUSTOMER_IP) an IPv6 address in brackets, as Jetty returns it, or with a zone index:
-     * both are removed.
+     * PayU accepts an IPv6 address (confirmed on the sandbox), but refuses with INVALID_CUSTOMER_IP one in brackets,
+     * as Jetty returns it, or with a zone index: both are removed.
      */
     private static String resolveCustomerIp(PaymentSpecification spec) {
         String customerIp = spec.getCustomerIp();
@@ -671,10 +677,19 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     }
 
     /**
-     * Refunds a PayU order, in full ({@code amount} null) or in part. The {@code extRefundId} is deterministic
-     * ({@code <reservationId>-refund-<amountCents>-<n>}, n = 1 + the refunds already listed), so that when the POST
-     * times out the refunds can be re-read to know whether PayU received it, and a retry is never sent twice under
-     * the same id.
+     * Refunds a PayU order, in full ({@code amount} null) or in part. The {@code extRefundId} is deterministic:
+     * {@code <reservationId>-refund-<amountCents>-<n>}, where n = 1 + the refunds already listed for the order.
+     * <p>
+     * It protects against:
+     * <ul>
+     *     <li>a POST that times out: the refunds are re-read within the same call and the refund counts as done
+     *     only if one with this id is listed;</li>
+     *     <li>concurrent duplicates: two requests computed from the same listing carry the same id, and PayU accepts
+     *     an {@code extRefundId} only once per order.</li>
+     * </ul>
+     * It does not protect against an operator retry after a refund that actually landed (for example, after the
+     * timeout re-read could not confirm it): the listing then has one more refund, n is different, and a second
+     * refund is sent. Check the PayU panel before retrying a refund that was reported as failed.
      */
     @Override
     public boolean refund(Transaction transaction, PurchaseContext purchaseContext, Integer amount) {
