@@ -87,6 +87,7 @@ import {OnsitePaymentProxyComponent} from './payment/onsite-payment-proxy/onsite
 import {PaypalPaymentProxyComponent} from './payment/paypal-payment-proxy/paypal-payment-proxy.component';
 import {StripePaymentProxyComponent} from './payment/stripe-payment-proxy/stripe-payment-proxy.component';
 import {SaferpayPaymentProxyComponent} from './payment/saferpay-payment-proxy/saferpay-payment-proxy.component';
+import {PayUPaymentProxyComponent} from './payment/payu-payment-proxy/payu-payment-proxy.component';
 import {CustomOfflinePaymentProxyComponent} from './payment/custom-offline-payment-proxy/custom-offline-payment-proxy.component';
 import {ProcessingPaymentComponent} from './reservation/processing-payment/processing-payment.component';
 import {SummaryTableComponent} from './reservation/summary-table/summary-table.component';
@@ -175,6 +176,7 @@ export function InitUserService(userService: UserService): () => Promise<boolean
         PaypalPaymentProxyComponent,
         StripePaymentProxyComponent,
         SaferpayPaymentProxyComponent,
+        PayUPaymentProxyComponent,
         CustomOfflinePaymentProxyComponent,
         ProcessingPaymentComponent,
         SummaryTableComponent,

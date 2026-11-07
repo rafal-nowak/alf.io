@@ -69,6 +69,9 @@ export class OverviewComponent implements OnInit {
     private feedbackService: FeedbackService) { }
 
   ngOnInit() {
+    if (this.route.snapshot.queryParams['paymentCancelled'] === 'true') {
+      this.feedbackService.showError('reservation-page.payment.cancelled');
+    }
     zip(this.route.data, this.route.params).subscribe(([data, params]) => {
 
       this.publicIdentifier = params[data.publicIdentifierParameter];

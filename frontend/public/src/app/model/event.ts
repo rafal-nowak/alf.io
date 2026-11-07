@@ -122,9 +122,9 @@ export type PaymentMethodId = string;
 
 export type StaticPaymentMethodNames =
     'CREDIT_CARD' | 'PAYPAL' | 'IDEAL' | 'BANK_TRANSFER' | 'ON_SITE'
-                            | 'APPLE_PAY' | 'BANCONTACT' | 'ING_HOME_PAY' | 'BELFIUS' | 'PRZELEWY_24' | 'KBC' | 'ETRANSFER' | 'NONE';
+                            | 'APPLE_PAY' | 'BANCONTACT' | 'ING_HOME_PAY' | 'BELFIUS' | 'PRZELEWY_24' | 'KBC' | 'ETRANSFER' | 'PAYU' | 'NONE';
 
-export type PaymentProxy = 'STRIPE' | 'ON_SITE' | 'OFFLINE' | 'PAYPAL' | 'MOLLIE' | 'SAFERPAY' | 'CUSTOM_OFFLINE';
+export type PaymentProxy = 'STRIPE' | 'ON_SITE' | 'OFFLINE' | 'PAYPAL' | 'MOLLIE' | 'SAFERPAY' | 'PAYU' | 'CUSTOM_OFFLINE';
 export interface PaymentMethodDetails {
     labelKey: string;
     icon: [IconPrefix, IconName];
@@ -170,6 +170,10 @@ export const staticPaymentMethodDetails: {[key in StaticPaymentMethodNames]: Pay
     'APPLE_PAY': {
         labelKey: 'reservation-page.payment-method.apple-pay',
         icon: ['fab', 'apple-pay']
+    },
+    'PAYU': {
+        labelKey: 'reservation-page.payment-method.payu',
+        icon: ['fas', 'credit-card']
     },
     'KBC': {
         labelKey: 'reservation-page.payment-method.kbc',

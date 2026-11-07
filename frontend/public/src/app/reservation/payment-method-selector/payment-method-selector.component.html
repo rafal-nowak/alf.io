@@ -75,6 +75,11 @@
                 [method]="selectedPaymentMethod"
                 (paymentProvider)="registerCurrentPaymentProvider($event)">
                 </app-saferpay-payment-proxy>
+                <app-payu-payment-proxy
+                    [proxy]="selectedPaymentProxy"
+                    [method]="selectedPaymentMethod"
+                    (paymentProvider)="registerCurrentPaymentProvider($event)">
+                </app-payu-payment-proxy>
                 <app-custom-offline-payment-proxy
                     [proxy]="selectedPaymentProxy"
                     [method]="selectedPaymentMethod"
