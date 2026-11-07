@@ -27,6 +27,7 @@ export function paymentMethodIcon(paymentMethod: string): string | undefined {
         case 'STRIPE':
         case 'MOLLIE':
         case 'SAFERPAY':
+        case 'PAYU':
             return 'credit-card';
         case 'OFFLINE':
             return 'cash-stack';

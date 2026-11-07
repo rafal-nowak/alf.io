@@ -9,6 +9,7 @@
         'PAYPAL'   : 'PayPal',
         'MOLLIE'   : 'Mollie: Credit cards, iDEAL, Bancontact, ING Home Pay, Belfius, KBC/CBC, Przelewy24',
         'SAFERPAY' : 'Saferpay By SIX Payments',
+        'PAYU'     : 'PayU: BLIK, fast transfer, card',
         'CUSTOM_OFFLINE' : 'Custom Offline Payment Methods'
     });
 

@@ -58,7 +58,7 @@ export interface TicketCategory {
     accessRestricted:             boolean;
 }
 
-export type PaymentProxy = 'STRIPE' | 'ON_SITE' | 'OFFLINE' | 'NONE' | 'ADMIN' | 'PAYPAL' | 'MOLLIE' | 'SAFERPAY' | 'CUSTOM_OFFLINE';
+export type PaymentProxy = 'STRIPE' | 'ON_SITE' | 'OFFLINE' | 'NONE' | 'ADMIN' | 'PAYPAL' | 'MOLLIE' | 'SAFERPAY' | 'PAYU' | 'CUSTOM_OFFLINE';
 export type EventStatus = 'DRAFT' | 'PUBLIC' | 'DISABLED';
 
 export interface EventStatistic {

@@ -132,7 +132,7 @@
                 </div>
 
 
-                <div class="page-header" id="PAYMENT" data-ng-if="organizationConf.payment || organizationConf.paymentPaypal || organizationConf.paymentStripe || organizationConf.paymentMollie || organizationConf.paymentOffline || organizationConf.paymentSaferpay">
+                <div class="page-header" id="PAYMENT" data-ng-if="organizationConf.payment || organizationConf.paymentPaypal || organizationConf.paymentStripe || organizationConf.paymentMollie || organizationConf.paymentOffline || organizationConf.paymentSaferpay || organizationConf.paymentPayu">
                     <h2>Payment</h2>
                     <span>Payment provider settings</span>
                 </div>
@@ -248,6 +248,17 @@
                     <div class="panel-body">
                         <div data-ng-repeat="setting in organizationConf.paymentSaferpay.settings">
                             <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="organizationConf.delete(config)"  ></setting>
+                        </div>
+                    </div>
+                </div>
+
+                <div data-ng-if="organizationConf.paymentPayu" class="panel panel-default">
+                    <div class="panel-heading">
+                        <div class="panel-title"><i class="fa fa-credit-card"></i> PayU</div>
+                    </div>
+                    <div class="panel-body">
+                        <div data-ng-repeat="setting in organizationConf.paymentPayu.settings">
+                            <setting data-obj="setting" data-display-delete-if-needed="true" data-delete-handler="organizationConf.delete(config)"></setting>
                         </div>
                     </div>
                 </div>
