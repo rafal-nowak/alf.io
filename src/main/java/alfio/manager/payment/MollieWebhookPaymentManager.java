@@ -150,6 +150,34 @@ public class MollieWebhookPaymentManager implements PaymentProvider, WebhookHand
         }
     }
 
+    /**
+     * Maps the payment methods returned by Mollie to the ones supported by alf.io.
+     * Methods unknown to alf.io (e.g. "blik", enabled by default on Polish accounts) are skipped,
+     * so that they don't prevent the supported ones from being offered.
+     */
+    static Set<? extends PaymentMethod> parseAvailablePaymentMethods(JsonObject body) {
+        int count = body.get("count").getAsInt();
+        if(count == 0) {
+            return EMPTY_METHODS;
+        }
+        var methodsObj = body.getAsJsonObject("_embedded").getAsJsonArray("methods");
+        var ignoredMethods = new ArrayList<String>();
+        Set<StaticPaymentMethods> result = EnumSet.noneOf(StaticPaymentMethods.class);
+        for(int i = 0; i < count; i++) {
+            var methodId = methodsObj.get(i).getAsJsonObject().get("id").getAsString();
+            var parsed = SUPPORTED_METHODS.get(methodId);
+            if (parsed != null) {
+                result.add(parsed);
+            } else {
+                ignoredMethods.add(methodId);
+            }
+        }
+        if(!ignoredMethods.isEmpty()) {
+            log.warn("Ignoring payment methods not supported by alf.io: {}", ignoredMethods);
+        }
+        return result;
+    }
+
     @Override
     public PaymentProxy getPaymentProxy() {
         return PaymentProxy.MOLLIE;
@@ -211,29 +239,7 @@ public class MollieWebhookPaymentManager implements PaymentProvider, WebhookHand
                 throw new IllegalStateException("fetch was unsuccessful (HTTP "+response.statusCode()+")");
             }
             try (var reader = new InputStreamReader(response.body(), UTF_8)) {
-                var body = JsonParser.parseReader(reader).getAsJsonObject();
-                int count = body.get("count").getAsInt();
-                if(count == 0) {
-                    return EMPTY_METHODS;
-                }
-                var methodsObj = body.getAsJsonObject("_embedded").getAsJsonArray("methods");
-                var rejectedMethods = new ArrayList<String>();
-                Set<StaticPaymentMethods> result = EnumSet.noneOf(StaticPaymentMethods.class);
-                for(int i = 0; i < count; i++) {
-                    var methodId = methodsObj.get(i).getAsJsonObject().get("id").getAsString();
-                    var parsed = SUPPORTED_METHODS.get(methodId);
-                    if (parsed != null) {
-                        result.add(parsed);
-                    } else {
-                        rejectedMethods.add(methodId);
-                    }
-                }
-                if(rejectedMethods.isEmpty()) {
-                    return result;
-                } else {
-                    log.warn("Unsupported payment methods found: {}. Please check configuration", rejectedMethods);
-                    throw new IllegalStateException("unsupported methods found");
-                }
+                return parseAvailablePaymentMethods(JsonParser.parseReader(reader).getAsJsonObject());
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
