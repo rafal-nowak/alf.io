@@ -72,7 +72,7 @@ public class PayUCallbackController {
         boolean errorPresent = error != null;
         if (errorPresent) {
             log.info("PayU returned with error {} (errorCode {}) for reservation {}",
-                RequestUtils.sanitizeForLog(error), RequestUtils.sanitizeForLog(errorCode), reservationId);
+                RequestUtils.sanitizeForLog(error), RequestUtils.sanitizeForLog(errorCode), RequestUtils.sanitizeForLog(reservationId));
             if (ticketReservationManager.cancelPendingPayment(reservationId, purchaseContext)) {
                 return overviewWithCancellation(type, identifier, reservationId);
             }

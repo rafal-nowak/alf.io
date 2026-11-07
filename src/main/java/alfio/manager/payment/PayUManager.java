@@ -104,10 +104,11 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     // PayU applies an accepted DELETE asynchronously: the order can still be NEW or PENDING right after it
     private static final int CANCEL_CONFIRMATION_READS = 5;
     private static final Duration CANCEL_CONFIRMATION_PAUSE = Duration.ofMillis(500);
-    // the re-reads run under the reservation lock: the waiting for the cancellation is bounded as a whole
+    // the re-reads run under the reservation lock: the budget bounds the pauses between them, but a re-read that
+    // starts within the budget can still add up to REQUEST_TIMEOUT (twice that with a 401 retry)
     private static final Duration CANCEL_CONFIRMATION_BUDGET = Duration.ofSeconds(3);
     // order statuses in which the buyer's money has been taken (or authorized)
-    private static final Set<String> PAID_ORDER_STATUSES = Set.of("COMPLETED", "WAITING_FOR_CONFIRMATION");
+    public static final Set<String> PAID_ORDER_STATUSES = Set.of("COMPLETED", "WAITING_FOR_CONFIRMATION");
     // used when the OAuth response has no expires_in
     private static final long DEFAULT_TOKEN_LIFETIME_SECONDS = 300;
     // a cached token is renewed this long before it expires
@@ -520,16 +521,12 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
             return checkOrderStatus(transaction, loadConfiguration(paymentContext.getPurchaseContext()),
                 PaymentWebhookResult.notRelevant("order not paid yet"));
         }
-        var notifiedStatus = payUPayload.getOrderStatus();
-        boolean paid = notifiedStatus != null && PAID_ORDER_STATUSES.contains(notifiedStatus);
-        boolean alreadyCompleted = sameOrder && transaction.getStatus() == Transaction.Status.COMPLETE;
-        if (paid && !alreadyCompleted) {
-            LOGGER.error("PayU notified the {} order {} for reservation {}, whose transaction ({}) refers to order {}: money may be captured without a reservation; check the PayU panel and refund if needed",
-                notifiedStatus, notifiedOrderId, transaction.getReservationId(), transaction.getStatus(), transaction.getPaymentId());
-        }
+        // a paid order that is not the current one is reported by PayUPaymentWebhookController, which sees every
+        // notification discarded here or by the core (core calls this method only for a PENDING transaction)
         if (!sameOrder) {
             return PaymentWebhookResult.notRelevant("notification refers to a different PayU order");
         }
+        // defensive: the core does not call this method for a transaction that is not PENDING
         return PaymentWebhookResult.notRelevant("transaction is not pending");
     }
 
@@ -839,8 +836,9 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
      * <p>
      * On the sandbox, a DELETE of a PENDING order answers SUCCESS and the order becomes CANCELED, and no money is
      * taken afterwards. PayU applies an accepted DELETE asynchronously, so a NEW or PENDING order is re-read up to
-     * {@value #CANCEL_CONFIRMATION_READS} times, with a short pause, within an overall time budget (the re-reads run
-     * under the reservation lock); when the budget is used up the order is reported as not cancelled.
+     * {@value #CANCEL_CONFIRMATION_READS} times, with a short pause, within a time budget (the re-reads run under the
+     * reservation lock); when the budget is used up the order is reported as not cancelled. The budget bounds the
+     * pauses: a single slow re-read that starts within the budget can add up to the request timeout.
      */
     private CancelOutcome cancelOrder(Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration, String orderId) {
         boolean deleteAccepted = false;

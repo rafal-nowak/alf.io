@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Test;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.time.Duration;
 import java.util.EnumMap;
 import java.util.HexFormat;
 import java.util.Map;
@@ -91,7 +92,7 @@ class PayUManagerLifecycleTest {
             return result;
         });
         manager = new PayUManager(configurationManager, httpClient, ticketReservationRepository, transactionRepository, TestUtil.clockProvider());
-        manager.setCancelConfirmationTiming(java.time.Duration.ZERO, java.time.Duration.ofSeconds(3));
+        manager.setCancelConfirmationTiming(Duration.ZERO, Duration.ofSeconds(3));
     }
 
     @SuppressWarnings("unchecked")

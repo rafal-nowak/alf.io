@@ -18,8 +18,11 @@ package alfio.controller.payment.api.payu;
 
 import alfio.manager.PurchaseContextManager;
 import alfio.manager.TicketReservationManager;
+import alfio.manager.support.PaymentWebhookResult;
 import alfio.model.transaction.PaymentContext;
 import alfio.model.transaction.PaymentProxy;
+import alfio.model.transaction.Transaction;
+import alfio.repository.TransactionRepository;
 import alfio.util.RequestUtils;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -35,9 +38,10 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.Map;
-import java.util.Set;
+import java.util.regex.Pattern;
 
 import static alfio.manager.payment.PayUManager.ADDITIONAL_INFO_RESERVATION_ID;
+import static alfio.manager.payment.PayUManager.PAID_ORDER_STATUSES;
 import static alfio.manager.payment.PayUManager.WEBHOOK_URL_TEMPLATE;
 
 @RestController
@@ -48,10 +52,12 @@ public class PayUPaymentWebhookController {
     static final String SIGNATURE_HEADER = "OpenPayu-Signature";
     static final String FALLBACK_SIGNATURE_HEADER = "X-OpenPayU-Signature";
     private static final String NOT_RELEVANT = "NOT_RELEVANT";
-    private static final Set<String> PAID_ORDER_STATUSES = Set.of("COMPLETED", "WAITING_FOR_CONFIRMATION");
+    // reservation ids are random UUIDs
+    private static final Pattern UUID_PATTERN = Pattern.compile("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
 
     private final TicketReservationManager ticketReservationManager;
     private final PurchaseContextManager purchaseContextManager;
+    private final TransactionRepository transactionRepository;
 
     @PostMapping(WEBHOOK_URL_TEMPLATE)
     public ResponseEntity<String> receivePaymentNotification(HttpServletRequest request,
@@ -72,10 +78,49 @@ public class PayUPaymentWebhookController {
             return ResponseEntity.ok("OK");
         } else if (result.isError()) {
             // PayU retries the notification; the reason stays in the logs
-            log.warn("PayU notification for reservation {} could not be processed: {}", reservationId, result.getReason());
+            log.warn("PayU notification for reservation {} could not be processed: {}", RequestUtils.sanitizeForLog(reservationId), result.getReason());
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body("NOK");
         }
+        if (result.getType() == PaymentWebhookResult.Type.NOT_RELEVANT) {
+            alertOnDiscardedPaidOrder(reservationId, content);
+        }
         return ResponseEntity.ok(result.getReason());
+    }
+
+    /**
+     * The core discards a notification (NOT_RELEVANT) when the reservation has no valid transaction (an order
+     * cancelled and invalidated, then paid anyway), when the transaction is not PENDING or the reservation cannot
+     * be paid any more, and PayUManager when the notification refers to another order. Every NOT_RELEVANT result
+     * comes after the signature check, so the body can be trusted here. A paid order discarded this way means money
+     * may have been taken without a reservation, unless it is the order already recorded as paid (a duplicate or
+     * late notification): that is checked on the transaction itself rather than on the result reason.
+     */
+    private void alertOnDiscardedPaidOrder(String reservationId, String content) {
+        var order = childObject(parseObject(content), "order");
+        var status = stringOrNull(order, "status");
+        if (status == null || !PAID_ORDER_STATUSES.contains(status)) {
+            return;
+        }
+        var orderId = stringOrNull(order, "orderId");
+        if (isOrderRecordedAsPaid(reservationId, orderId)) {
+            return;
+        }
+        log.error("PayU notified the {} order {} for reservation {}, but the notification was discarded: money may be captured without a reservation; check the PayU panel and refund if needed",
+            RequestUtils.sanitizeForLog(status), RequestUtils.sanitizeForLog(orderId), RequestUtils.sanitizeForLog(reservationId));
+    }
+
+    /**
+     * Whether the order is the one already recorded as paid for the reservation: its valid transaction is COMPLETE
+     * and refers to that order. Reads the same valid transaction as the rest of the payment code.
+     */
+    private boolean isOrderRecordedAsPaid(String reservationId, String orderId) {
+        if (orderId == null) {
+            return false;
+        }
+        return transactionRepository.loadOptionalByReservationId(reservationId)
+            .filter(transaction -> transaction.getStatus() == Transaction.Status.COMPLETE)
+            .filter(transaction -> orderId.equals(transaction.getPaymentId()))
+            .isPresent();
     }
 
     private static String readSignature(HttpServletRequest request) {
@@ -89,7 +134,8 @@ public class PayUPaymentWebhookController {
     /**
      * The body is not verified here (the signature is checked only for a known reservation): its values are only
      * logged, sanitized. A paid order for an unknown reservation means money may have been taken without a
-     * reservation, so it is logged as an error.
+     * reservation, so it is logged as an error, but only when the reservation id has the shape of a real one: the
+     * body is unsigned, and a random path would otherwise raise a false alarm.
      */
     private static void logUnknownReservation(String reservationId, String content) {
         var root = parseObject(content);
@@ -101,11 +147,13 @@ public class PayUPaymentWebhookController {
         var status = stringOrNull(order, "status");
         var safeOrderId = RequestUtils.sanitizeForLog(orderId);
         var safeStatus = RequestUtils.sanitizeForLog(status);
-        if (status != null && PAID_ORDER_STATUSES.contains(status)) {
+        var safeReservationId = RequestUtils.sanitizeForLog(reservationId);
+        boolean paid = status != null && PAID_ORDER_STATUSES.contains(status);
+        if (paid && UUID_PATTERN.matcher(reservationId).matches()) {
             log.error("Received PayU notification of a {} order {} for unknown reservation {}: money may be captured without a reservation; check the PayU panel and refund if needed",
-                safeStatus, safeOrderId, reservationId);
+                safeStatus, safeOrderId, safeReservationId);
         } else {
-            log.warn("Received PayU notification for unknown reservation {} (orderId: {}, status: {})", reservationId, safeOrderId, safeStatus);
+            log.warn("Received PayU notification for unknown reservation {} (orderId: {}, status: {})", safeReservationId, safeOrderId, safeStatus);
         }
     }
 
