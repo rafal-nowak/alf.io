@@ -21,6 +21,7 @@ import alfio.config.DataSourceConfiguration;
 import alfio.config.Initializer;
 import alfio.controller.api.ControllerConfiguration;
 import alfio.controller.api.v2.model.ReservationInfo;
+import alfio.controller.api.v2.model.ReservationPaymentResult;
 import alfio.controller.form.ContactAndTicketsForm;
 import alfio.controller.form.PaymentForm;
 import alfio.controller.form.ReservationForm;
@@ -28,6 +29,7 @@ import alfio.controller.form.UpdateTicketOwnerForm;
 import alfio.controller.payment.PayUCallbackController;
 import alfio.controller.payment.api.payu.PayUPaymentWebhookController;
 import alfio.manager.payment.payu.PayUSignature;
+import alfio.manager.support.response.ValidatedResponse;
 import alfio.manager.user.UserManager;
 import alfio.model.Event;
 import alfio.model.PriceContainer;
@@ -69,6 +71,8 @@ import org.springframework.web.context.request.ServletWebRequest;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
+import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.util.*;
@@ -194,6 +198,100 @@ class PayUReservationFlowIntegrationTest extends BaseReservationFlowTest {
         PAYU.verify(1, postRequestedFor(urlEqualTo(ORDERS_PATH)));
     }
 
+    @Test
+    void returnForCanceledOrderBringsReservationBackToPendingAndAllowsANewOrder() {
+        var event = createEvent(List.of(PaymentProxy.PAYU)).getLeft();
+        var reservationId = reserveAndMoveToOverview(event);
+        var orderId = startPayUPayment(reservationId);
+        stubOrder(orderId, reservationId, "CANCELED");
+
+        // no error parameter, but PayU already cancelled the order: the force-check brings the reservation back
+        var redirect = payUCallbackController.payuReturn(PurchaseContextType.event, event.getShortName(), reservationId, null, null);
+
+        assertEquals("redirect:/event/" + event.getShortName() + "/reservation/" + reservationId + "/overview?paymentCancelled=true", redirect);
+        assertReservationStatus(reservationId, TicketReservation.TicketReservationStatus.PENDING);
+        assertTrue(transactionRepository.loadOptionalByStatusAndPaymentProxyForUpdate(reservationId, Transaction.Status.PENDING, PaymentProxy.PAYU).isEmpty());
+        PAYU.verify(0, deleteRequestedFor(urlEqualTo(ORDERS_PATH + "/" + orderId)));
+
+        // PayU extends the validity from the fixed test clock (today at 10:00), while confirmOverview checks it
+        // against the wall clock: move it forward so that the second attempt is not rejected as expired
+        ticketReservationRepository.updateValidity(reservationId, Date.from(Instant.now().plus(Duration.ofMinutes(25))));
+
+        // the buyer pays again: the cancelled order cannot be paid any more, so a new one is created
+        var secondOrderId = startPayUPayment(reservationId);
+        assertNotEquals(orderId, secondOrderId);
+        PAYU.verify(2, postRequestedFor(urlEqualTo(ORDERS_PATH)));
+        var pending = transactionRepository.loadOptionalByStatusAndPaymentProxyForUpdate(reservationId, Transaction.Status.PENDING, PaymentProxy.PAYU);
+        assertEquals(secondOrderId, pending.orElseThrow().getPaymentId());
+    }
+
+    @Test
+    void secondConfirmWhileOrderIsBeingPaidCreatesNoSecondOrder() {
+        var event = createEvent(List.of(PaymentProxy.PAYU)).getLeft();
+        var reservationId = reserveAndMoveToOverview(event);
+        var orderId = startPayUPayment(reservationId);
+        stubOrder(orderId, reservationId, "PENDING");
+
+        var response = confirmOverviewWithPayU(reservationId);
+
+        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, response.getStatusCode());
+        PAYU.verify(1, postRequestedFor(urlEqualTo(ORDERS_PATH)));
+        PAYU.verify(0, deleteRequestedFor(urlEqualTo(ORDERS_PATH + "/" + orderId)));
+        assertReservationStatus(reservationId, TicketReservation.TicketReservationStatus.EXTERNAL_PROCESSING_PAYMENT);
+        var pending = transactionRepository.loadOptionalByStatusAndPaymentProxyForUpdate(reservationId, Transaction.Status.PENDING, PaymentProxy.PAYU);
+        assertEquals(orderId, pending.orElseThrow().getPaymentId());
+    }
+
+    @Test
+    void waitingForConfirmationNotificationCapturesThenCompletedNotificationConfirms() {
+        var event = createEvent(List.of(PaymentProxy.PAYU)).getLeft();
+        var reservationId = reserveAndMoveToOverview(event);
+        var orderId = startPayUPayment(reservationId);
+        var extOrderId = stubOrder(orderId, reservationId, "WAITING_FOR_CONFIRMATION");
+        var statusPath = ORDERS_PATH + "/" + orderId + "/status";
+        PAYU.stubFor(put(urlEqualTo(statusPath)).willReturn(okJson(successStatus(null).toString())));
+
+        var waiting = sendNotification(reservationId, orderNotification(orderId, extOrderId, "WAITING_FOR_CONFIRMATION"));
+
+        assertEquals(HttpStatus.OK, waiting.getStatusCode());
+        PAYU.verify(1, putRequestedFor(urlEqualTo(statusPath)));
+        var capture = JsonParser.parseString(PAYU.findAll(putRequestedFor(urlEqualTo(statusPath))).getFirst().getBodyAsString()).getAsJsonObject();
+        assertEquals(orderId, capture.get(ORDER_ID).getAsString());
+        assertEquals("COMPLETED", capture.get("orderStatus").getAsString());
+        assertReservationStatus(reservationId, TicketReservation.TicketReservationStatus.WAITING_EXTERNAL_CONFIRMATION);
+
+        stubOrder(orderId, reservationId, "COMPLETED");
+        var completed = sendNotification(reservationId, orderNotification(orderId, extOrderId, "COMPLETED"));
+
+        assertEquals(HttpStatus.OK, completed.getStatusCode());
+        assertEquals("OK", completed.getBody());
+        assertReservationStatus(reservationId, TicketReservation.TicketReservationStatus.COMPLETE);
+        assertTransactionSuccessful(reservationId);
+        PAYU.verify(1, postRequestedFor(urlEqualTo(ORDERS_PATH)));
+    }
+
+    @Test
+    void completedOrderWithWrongAmountIsRetriedAndConfirmsNothing() {
+        var event = createEvent(List.of(PaymentProxy.PAYU)).getLeft();
+        var reservationId = reserveAndMoveToOverview(event);
+        var orderId = startPayUPayment(reservationId);
+        var extOrderId = stubOrder(orderId, reservationId, "COMPLETED", "999");
+
+        var response = sendNotification(reservationId, orderNotification(orderId, extOrderId, "COMPLETED"));
+
+        // 500: PayU retries the notification, an operator has to look at the order
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, response.getStatusCode());
+        assertReservationStatus(reservationId, TicketReservation.TicketReservationStatus.EXTERNAL_PROCESSING_PAYMENT);
+        var pending = transactionRepository.loadOptionalByStatusAndPaymentProxyForUpdate(reservationId, Transaction.Status.PENDING, PaymentProxy.PAYU);
+        assertEquals(orderId, pending.orElseThrow().getPaymentId());
+
+        // the return force-check does not confirm it either, and keeps the transaction
+        var redirect = payUCallbackController.payuReturn(PurchaseContextType.event, event.getShortName(), reservationId, null, null);
+        assertEquals("redirect:/event/" + event.getShortName() + "/reservation/" + reservationId + "/book", redirect);
+        assertReservationStatus(reservationId, TicketReservation.TicketReservationStatus.EXTERNAL_PROCESSING_PAYMENT);
+        assertTrue(transactionRepository.loadOptionalByStatusAndPaymentProxyForUpdate(reservationId, Transaction.Status.PENDING, PaymentProxy.PAYU).isPresent());
+    }
+
     @Override
     protected void performAndValidatePayment(ReservationFlowContext context,
                                              String reservationId,
@@ -312,15 +410,7 @@ class PayUReservationFlowIntegrationTest extends BaseReservationFlowTest {
         PAYU.stubFor(get(urlEqualTo(ORDERS_PATH + "/" + orderId + "/refunds"))
             .willReturn(okJson("{\"refunds\":[]}")));
 
-        var paymentForm = new PaymentForm();
-        paymentForm.setPrivacyPolicyAccepted(true);
-        paymentForm.setTermAndConditionsAccepted(true);
-        paymentForm.setPaymentProxy(PaymentProxy.PAYU);
-        paymentForm.setSelectedPaymentMethod(StaticPaymentMethods.PAYU);
-        var request = new MockHttpServletRequest();
-        request.setRemoteAddr("192.0.2.10");
-        var response = reservationApiV2Controller.confirmOverview(reservationId, "en", paymentForm,
-            new BeanPropertyBindingResult(paymentForm, "paymentForm"), request, null);
+        var response = confirmOverviewWithPayU(reservationId);
 
         assertEquals(HttpStatus.OK, response.getStatusCode());
         var result = requireNonNull(requireNonNull(response.getBody()).getValue());
@@ -337,6 +427,18 @@ class PayUReservationFlowIntegrationTest extends BaseReservationFlowTest {
         return orderId;
     }
 
+    private ResponseEntity<ValidatedResponse<ReservationPaymentResult>> confirmOverviewWithPayU(String reservationId) {
+        var paymentForm = new PaymentForm();
+        paymentForm.setPrivacyPolicyAccepted(true);
+        paymentForm.setTermAndConditionsAccepted(true);
+        paymentForm.setPaymentProxy(PaymentProxy.PAYU);
+        paymentForm.setSelectedPaymentMethod(StaticPaymentMethods.PAYU);
+        var request = new MockHttpServletRequest();
+        request.setRemoteAddr("192.0.2.10");
+        return reservationApiV2Controller.confirmOverview(reservationId, "en", paymentForm,
+            new BeanPropertyBindingResult(paymentForm, "paymentForm"), request, null);
+    }
+
     private static void stubAuthorization() {
         PAYU.stubFor(post(urlEqualTo("/pl/standard/user/oauth/authorize"))
             .willReturn(okJson("{\"access_token\":\"test-access-token\",\"token_type\":\"bearer\",\"expires_in\":43199,\"grant_type\":\"client_credentials\"}")));
@@ -349,13 +451,23 @@ class PayUReservationFlowIntegrationTest extends BaseReservationFlowTest {
      */
     private static String stubOrder(String orderId, String reservationId, String status) {
         var orderRequest = JsonParser.parseString(PAYU.findAll(postRequestedFor(urlEqualTo(ORDERS_PATH))).getLast().getBodyAsString()).getAsJsonObject();
+        return stubOrder(orderId, reservationId, status, orderRequest.get("totalAmount").getAsString());
+    }
+
+    /**
+     * Stubs GET of the order with the given amount, which may differ from the one sent when it was created.
+     *
+     * @return the extOrderId of the order
+     */
+    private static String stubOrder(String orderId, String reservationId, String status, String totalAmount) {
+        var orderRequest = JsonParser.parseString(PAYU.findAll(postRequestedFor(urlEqualTo(ORDERS_PATH))).getLast().getBodyAsString()).getAsJsonObject();
         var extOrderId = orderRequest.get("extOrderId").getAsString();
         var order = new JsonObject();
         order.addProperty(ORDER_ID, orderId);
         order.addProperty("extOrderId", extOrderId);
         order.addProperty("description", reservationId);
         order.addProperty("currencyCode", orderRequest.get("currencyCode").getAsString());
-        order.addProperty("totalAmount", orderRequest.get("totalAmount").getAsString());
+        order.addProperty("totalAmount", totalAmount);
         order.addProperty("status", status);
         var orders = new JsonArray();
         orders.add(order);

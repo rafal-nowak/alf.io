@@ -90,6 +90,9 @@ class PayUManagerTest {
     private Map<ConfigurationKeys, ConfigurationManager.MaybeConfiguration> configuration;
     private PayUManager manager;
     private final List<String> orderBodies = new ArrayList<>();
+    // answers POST /api/v2_1/orders (order creation)
+    private ExistingOrderApi orderCreationApi = request -> new Reply(302,
+        "{\"status\":{\"statusCode\":\"SUCCESS\"},\"redirectUri\":\"https://payu.example/pay\",\"orderId\":\"ORDER1\"}");
     // answers every PayU call except OAuth and order creation
     private ExistingOrderApi existingOrderApi = request -> new Reply(500, "");
     // answers the OAuth calls; the argument is the 1-based number of the OAuth call
@@ -138,8 +141,9 @@ class PayUManagerTest {
                 when(response.body()).thenReturn(oauthBody);
             } else if ("POST".equals(request.method()) && request.uri().getPath().equals("/api/v2_1/orders")) {
                 orderBodies.add(readBody(request));
-                when(response.statusCode()).thenReturn(302);
-                when(response.body()).thenReturn("{\"status\":{\"statusCode\":\"SUCCESS\"},\"redirectUri\":\"https://payu.example/pay\",\"orderId\":\"ORDER1\"}");
+                var reply = orderCreationApi.answer(request);
+                when(response.statusCode()).thenReturn(reply.status());
+                when(response.body()).thenReturn(reply.body());
             } else {
                 var reply = existingOrderApi.answer(request);
                 when(response.statusCode()).thenReturn(reply.status());
@@ -347,6 +351,106 @@ class PayUManagerTest {
         verify(transactionRepository, never()).update(anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
     }
 
+    @Test
+    void reconfirmWaitingOrderWhoseCaptureFailsStaysPending() throws Exception {
+        givenExistingTransaction();
+        var captureReplies = new ArrayList<ExistingOrderApi>();
+        captureReplies.add(request -> new Reply(500, "{\"status\":{\"statusCode\":\"ERROR_INTERNAL\"}}"));
+        captureReplies.add(request -> {
+            throw new HttpTimeoutException("request timed out");
+        });
+        for (var captureReply : captureReplies) {
+            existingOrderApi = request -> {
+                if ("PUT".equals(request.method())) {
+                    return captureReply.answer(request);
+                }
+                return orderLookup("WAITING_FOR_CONFIRMATION", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+            };
+            // the authorized money must not be orphaned by a second order, whatever the capture outcome
+            assertEquals(PaymentResult.pending(OLD_ORDER_ID), manager.doPayment(spec(null, null)));
+        }
+        assertEquals(2, requestCount("PUT", "/api/v2_1/orders/" + OLD_ORDER_ID + "/status"));
+        assertFalse(orderCreationAttempted());
+        verify(transactionRepository, never()).invalidateForReservation(any(), any());
+        verify(transactionRepository, never()).update(anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
+    }
+
+    @Test
+    void reconfirmNewOrderRetriesDeleteOnceAfterUnauthorized() throws Exception {
+        givenExistingTransaction();
+        oauthApi = count -> "{\"access_token\":\"tok" + count + "\",\"expires_in\":43199}";
+        var deletes = new int[] {0};
+        existingOrderApi = request -> {
+            if ("DELETE".equals(request.method())) {
+                deletes[0]++;
+                if (deletes[0] == 1) {
+                    return new Reply(401, "{\"error\":\"invalid_token\"}");
+                }
+                return new Reply(200, "{\"status\":{\"statusCode\":\"SUCCESS\"}}");
+            }
+            return orderLookup("NEW", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+        };
+
+        var result = manager.doPayment(spec(null, null));
+
+        assertTrue(result.isRedirect());
+        assertEquals(2, requestCount("DELETE", "/api/v2_1/orders/" + OLD_ORDER_ID));
+        assertEquals(2, requestCount("POST", "/pl/standard/user/oauth/authorize"));
+        assertEquals(1, requestCount("POST", "/api/v2_1/orders"));
+    }
+
+    @Test
+    void reconfirmNewOrderWhoseDeleteTimesOutDependsOnTheReRead() throws Exception {
+        givenExistingTransaction();
+        var reads = new int[] {0};
+        var reReadAfterTimeout = new Reply[] { orderLookup("CANCELED", "1000", "PLN", EXISTING_EXT_ORDER_ID) };
+        existingOrderApi = request -> {
+            if ("DELETE".equals(request.method())) {
+                throw new HttpTimeoutException("request timed out");
+            }
+            reads[0]++;
+            if (reads[0] == 1) {
+                return orderLookup("NEW", "1000", "PLN", EXISTING_EXT_ORDER_ID);
+            }
+            return reReadAfterTimeout[0];
+        };
+
+        // the re-read shows the order CANCELED: the DELETE went through, a new order can be created
+        assertTrue(manager.doPayment(spec(null, null)).isRedirect());
+        assertEquals(1, requestCount("POST", "/api/v2_1/orders"));
+
+        // the re-read fails: the old order may still be payable, no new order
+        clearInvocations(httpClient);
+        reads[0] = 0;
+        reReadAfterTimeout[0] = new Reply(503, "Service Unavailable");
+        assertEquals(PaymentResult.pending(OLD_ORDER_ID), manager.doPayment(spec(null, null)));
+        assertTrue(requestSent("DELETE", "/api/v2_1/orders/" + OLD_ORDER_ID));
+        assertFalse(orderCreationAttempted());
+    }
+
+    @Test
+    void orderCreationFailureIsFailedAndRecordsNothing() throws Exception {
+        var creationReplies = new ArrayList<ExistingOrderApi>();
+        // POST timed out: PayU may have created an order, but the buyer never gets its redirectUri (spec L9)
+        creationReplies.add(request -> {
+            throw new HttpTimeoutException("request timed out");
+        });
+        creationReplies.add(request -> new Reply(400, "{\"status\":{\"statusCode\":\"ERROR_VALUE_INVALID\"}}"));
+        for (var creationReply : creationReplies) {
+            orderCreationApi = creationReply;
+
+            var result = manager.doPayment(spec(null, null));
+
+            assertTrue(result.isFailed());
+            assertEquals(Optional.of("error.STEP2_PAYU_unexpected"), result.getErrorCode());
+        }
+        assertEquals(2, requestCount("POST", "/api/v2_1/orders"));
+        verify(ticketReservationRepository, never()).updateReservationStatus(any(), any());
+        verify(ticketReservationRepository, never()).updateValidity(any(), any());
+        verify(transactionRepository, never()).invalidateForReservation(any(), any());
+        verify(transactionRepository, never()).insert(any(), any(), any(), any(), anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
+    }
+
     // --- status mapping: webhook and force-check (spec §3) ---
 
     @Test
@@ -432,6 +536,30 @@ class PayUManagerTest {
         assertEquals(PaymentWebhookResult.pending().getType(), forced.getType());
         verify(transactionRepository, never()).update(anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
         verify(transactionRepository, never()).invalidateById(anyInt());
+    }
+
+    @Test
+    void unreadableOrderIsAnErrorAndChangesNothing() throws Exception {
+        var transaction = givenExistingTransaction();
+        var replies = List.of(
+            new Reply(404, "{\"status\":{\"statusCode\":\"DATA_NOT_FOUND\"}}"),
+            new Reply(200, "{\"orders\":[],\"status\":{\"statusCode\":\"SUCCESS\"}}"),
+            new Reply(200, "not json"));
+        for (var reply : replies) {
+            existingOrderApi = request -> reply;
+
+            var webhook = manager.processWebhook(webhookPayload("COMPLETED"), transaction, new PaymentContext(event));
+            var forced = manager.forceTransactionCheck(null, transaction, new PaymentContext(event));
+
+            // ERROR: the webhook answers 500 (PayU retries) and the force-check is a no-op, never a cancellation
+            assertEquals(PaymentWebhookResult.Type.ERROR, webhook.getType(), reply.body());
+            assertEquals(PaymentWebhookResult.Type.ERROR, forced.getType(), reply.body());
+        }
+        verify(transactionRepository, never()).invalidateById(anyInt());
+        verify(transactionRepository, never()).update(anyInt(), any(), any(), any(), anyLong(), anyLong(), any(), any());
+        verify(ticketReservationRepository, never()).updateValidity(any(), any());
+        assertFalse(requestSent("DELETE", "/api/v2_1/orders/" + OLD_ORDER_ID));
+        assertFalse(requestSent("PUT", "/api/v2_1/orders/" + OLD_ORDER_ID + "/status"));
     }
 
     // --- server-initiated transaction contract (spec §1) ---

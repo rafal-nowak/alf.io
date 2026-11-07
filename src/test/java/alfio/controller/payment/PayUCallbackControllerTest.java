@@ -75,6 +75,20 @@ class PayUCallbackControllerTest {
     }
 
     @Test
+    void errorWithOrderThatCannotBeCancelledFollowsTheForceCheck() {
+        // e.g. PayU appended error but the order is already PENDING (BLIK in flight): the payment is not abandoned
+        when(ticketReservationManager.cancelPendingPayment(RESERVATION_ID, purchaseContext)).thenReturn(false);
+        when(ticketReservationManager.forceTransactionCheck(purchaseContext, reservation)).thenReturn(Optional.of(PaymentResult.pending("ORDER-1")));
+        assertEquals(BOOK, payuReturn("501", null));
+
+        when(ticketReservationManager.forceTransactionCheck(purchaseContext, reservation)).thenReturn(Optional.of(PaymentResult.successful("ORDER-1")));
+        assertEquals(BOOK, payuReturn("501", null));
+
+        when(ticketReservationManager.forceTransactionCheck(purchaseContext, reservation)).thenReturn(Optional.of(PaymentResult.failed("CANCELED")));
+        assertEquals(OVERVIEW_CANCELLED, payuReturn("501", null));
+    }
+
+    @Test
     void successfulPaymentRedirectsToBook() {
         when(ticketReservationManager.forceTransactionCheck(purchaseContext, reservation)).thenReturn(Optional.of(PaymentResult.successful("ORDER-1")));
         assertEquals(BOOK, payuReturn(null, null));
