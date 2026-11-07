@@ -368,7 +368,8 @@ public class ReservationApiV2Controller {
                 reservationCost.getPriceWithVAT(), event, reservation.getEmail(), customerName, reservation.getBillingAddress(),
                 reservation.getCustomerReference(), locale, reservation.isInvoiceRequested(), !reservation.isDirectAssignmentRequested(),
                 orderSummary, reservation.getVatCountryCode(), reservation.getVatNr(), reservation.getVatStatus(),
-                Boolean.TRUE.equals(paymentForm.getTermAndConditionsAccepted()), Boolean.TRUE.equals(paymentForm.getPrivacyPolicyAccepted()));
+                Boolean.TRUE.equals(paymentForm.getTermAndConditionsAccepted()), Boolean.TRUE.equals(paymentForm.getPrivacyPolicyAccepted()))
+                .withCustomerIp(RequestUtils.getClientIp(request));
 
             final PaymentResult status = ticketReservationManager.performPayment(spec, reservationCost, paymentForm.getPaymentProxy(), paymentForm.getSelectedPaymentMethod(), principal);
 

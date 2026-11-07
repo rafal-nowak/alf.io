@@ -422,10 +422,14 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     }
 
     /**
-     * PayU requires the buyer's IP address. It is not part of the payment specification yet, so any valid address
-     * is sent for now.
+     * PayU requires the buyer's IP address. The controller puts it in the payment specification; when it is missing
+     * (for example, a payment not started from the public frontend), the loopback address is sent.
      */
     private static String resolveCustomerIp(PaymentSpecification spec) {
+        String customerIp = spec.getCustomerIp();
+        if (customerIp != null && !customerIp.isBlank()) {
+            return customerIp;
+        }
         return DEFAULT_CUSTOMER_IP;
     }
 

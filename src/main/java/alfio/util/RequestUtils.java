@@ -51,6 +51,28 @@ public class RequestUtils {
         }
     }
 
+    private static final String FORWARDED_FOR_HEADER = "X-Forwarded-For";
+    private static final String LOOPBACK_IP = "127.0.0.1";
+
+    /**
+     * Returns the IP address of the client: the first entry of the X-Forwarded-For header when present,
+     * otherwise the remote address of the request, otherwise the loopback address.
+     */
+    public static String getClientIp(HttpServletRequest request) {
+        String forwardedFor = request.getHeader(FORWARDED_FOR_HEADER);
+        if (forwardedFor != null) {
+            String firstEntry = forwardedFor.split(",", 2)[0].trim();
+            if (!firstEntry.isEmpty()) {
+                return firstEntry;
+            }
+        }
+        String remoteAddress = request.getRemoteAddr();
+        if (remoteAddress != null && !remoteAddress.isBlank()) {
+            return remoteAddress.trim();
+        }
+        return LOOPBACK_IP;
+    }
+
     private static final Pattern SOCIAL_MEDIA_UA = Pattern.compile("facebookexternalhit/|XING-contenttabreceiver/|LinkedInBot/|Twitterbot/|WhatsApp|Slackbot|TelegramBot");
 
     public static boolean isSocialMediaShareUA(String ua) {

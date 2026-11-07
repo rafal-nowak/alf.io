@@ -167,6 +167,14 @@ class PayUManagerTest {
     }
 
     @Test
+    void orderRequestCarriesTheSpecificationCustomerIp() {
+        var specification = spec(new CustomerName("Jan Kowalski", "Jan", "Kowalski", true), Locale.ENGLISH)
+            .withCustomerIp("203.0.113.7");
+        manager.doPayment(specification);
+        assertEquals("203.0.113.7", lastOrderBody().get("customerIp").getAsString());
+    }
+
+    @Test
     void validityTimeIsRemainingReservationTimeWithFloor() {
         var now = Instant.now(TestUtil.clockProvider().getClock());
         // 20 minutes left

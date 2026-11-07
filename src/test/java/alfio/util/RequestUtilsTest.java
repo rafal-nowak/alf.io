@@ -18,6 +18,7 @@ package alfio.util;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
+import org.springframework.mock.web.MockHttpServletRequest;
 
 public class RequestUtilsTest {
 
@@ -30,5 +31,28 @@ public class RequestUtilsTest {
         Assertions.assertTrue(RequestUtils.isSocialMediaShareUA("WhatsApp/2.19.81 A"));
         Assertions.assertTrue(RequestUtils.isSocialMediaShareUA("Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)"));
         Assertions.assertFalse(RequestUtils.isSocialMediaShareUA("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36"));
+    }
+
+    @Test
+    public void clientIpIsTheFirstForwardedForEntryTrimmed() {
+        var request = new MockHttpServletRequest();
+        request.addHeader("X-Forwarded-For", " 203.0.113.7 , 10.0.0.1");
+        request.setRemoteAddr("10.0.0.2");
+        Assertions.assertEquals("203.0.113.7", RequestUtils.getClientIp(request));
+    }
+
+    @Test
+    public void clientIpIsTheRemoteAddressWithoutForwardedFor() {
+        var request = new MockHttpServletRequest();
+        request.setRemoteAddr("198.51.100.4");
+        Assertions.assertEquals("198.51.100.4", RequestUtils.getClientIp(request));
+    }
+
+    @Test
+    public void clientIpFallsBackToLoopbackWhenEverythingIsBlank() {
+        var request = new MockHttpServletRequest();
+        request.addHeader("X-Forwarded-For", "  ");
+        request.setRemoteAddr(" ");
+        Assertions.assertEquals("127.0.0.1", RequestUtils.getClientIp(request));
     }
 }

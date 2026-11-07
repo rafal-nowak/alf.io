@@ -45,6 +45,10 @@ public class PaymentSpecification {
     private final PriceContainer.VatStatus vatStatus;
     private final boolean tcAccepted;
     private final boolean privacyAccepted;
+    /**
+     * The buyer's IP address, as seen by the controller that confirmed the reservation. It can be null.
+     */
+    private final String customerIp;
 
     public PaymentSpecification( String reservationId,
                                  PaymentToken gatewayToken,
@@ -64,6 +68,30 @@ public class PaymentSpecification {
                                  PriceContainer.VatStatus vatStatus,
                                  boolean tcAccepted,
                                  boolean privacyAccepted) {
+        this(reservationId, gatewayToken, selectedPaymentMethod, priceWithVAT, purchaseContext, email, customerName,
+            billingAddress, customerReference, locale, invoiceRequested, postponeAssignment, orderSummary,
+            vatCountryCode, vatNr, vatStatus, tcAccepted, privacyAccepted, null);
+    }
+
+    private PaymentSpecification(String reservationId,
+                                 PaymentToken gatewayToken,
+                                 PaymentMethod selectedPaymentMethod,
+                                 int priceWithVAT,
+                                 PurchaseContext purchaseContext,
+                                 String email,
+                                 CustomerName customerName,
+                                 String billingAddress,
+                                 String customerReference,
+                                 Locale locale,
+                                 boolean invoiceRequested,
+                                 boolean postponeAssignment,
+                                 OrderSummary orderSummary,
+                                 String vatCountryCode,
+                                 String vatNr,
+                                 PriceContainer.VatStatus vatStatus,
+                                 boolean tcAccepted,
+                                 boolean privacyAccepted,
+                                 String customerIp) {
         this.reservationId = reservationId;
         this.gatewayToken = gatewayToken;
         this.selectedPaymentMethod = selectedPaymentMethod;
@@ -82,6 +110,7 @@ public class PaymentSpecification {
         this.vatStatus = vatStatus;
         this.tcAccepted = tcAccepted;
         this.privacyAccepted = privacyAccepted;
+        this.customerIp = customerIp;
     }
 
     public PaymentSpecification(TicketReservation reservation,
@@ -101,6 +130,15 @@ public class PaymentSpecification {
 
     PaymentSpecification(String reservationId, PaymentToken gatewayToken, PaymentMethod selectedPaymentMethod, int priceWithVAT, PurchaseContext purchaseContext, String email, CustomerName customerName ) {
         this(reservationId, gatewayToken, selectedPaymentMethod, priceWithVAT, purchaseContext, email, customerName, null, null, null, false, false, null, null, null, null, false, false);
+    }
+
+    /**
+     * Returns a copy of this specification carrying the given buyer IP address.
+     */
+    public PaymentSpecification withCustomerIp(String customerIp) {
+        return new PaymentSpecification(reservationId, gatewayToken, selectedPaymentMethod, priceWithVAT, purchaseContext,
+            email, customerName, billingAddress, customerReference, locale, invoiceRequested, postponeAssignment,
+            orderSummary, vatCountryCode, vatNr, vatStatus, tcAccepted, privacyAccepted, customerIp);
     }
 
     public String getCurrencyCode() {
