@@ -23,6 +23,8 @@ import alfio.manager.support.PaymentWebhookResult;
 import alfio.model.PurchaseContext;
 import alfio.model.transaction.PaymentContext;
 import alfio.model.transaction.PaymentProxy;
+import alfio.model.transaction.Transaction;
+import alfio.repository.TransactionRepository;
 import alfio.test.util.LogCapture;
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,17 +48,19 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class PayUPaymentWebhookControllerTest {
 
-    private static final String RESERVATION_ID = "reservation-id";
+    private static final String RESERVATION_ID = "5f2d3c1a-8b7e-4f6a-9c0d-1e2f3a4b5c6d";
     private static final String BODY = "{\"order\":{\"orderId\":\"ORDER-1\",\"status\":\"COMPLETED\"}}";
     private static final String SIGNATURE = "sender=checkout;signature=abc;algorithm=MD5;content=DOCUMENT";
 
     private TicketReservationManager ticketReservationManager;
     private PurchaseContextManager purchaseContextManager;
     private PurchaseContext purchaseContext;
+    private TransactionRepository transactionRepository;
     private PayUPaymentWebhookController controller;
 
     @BeforeEach
@@ -64,8 +68,9 @@ class PayUPaymentWebhookControllerTest {
         ticketReservationManager = mock(TicketReservationManager.class);
         purchaseContextManager = mock(PurchaseContextManager.class);
         purchaseContext = mock(PurchaseContext.class);
+        transactionRepository = mock(TransactionRepository.class);
         when(purchaseContextManager.findByReservationId(RESERVATION_ID)).thenReturn(Optional.of(purchaseContext));
-        controller = new PayUPaymentWebhookController(ticketReservationManager, purchaseContextManager);
+        controller = new PayUPaymentWebhookController(ticketReservationManager, purchaseContextManager, transactionRepository);
     }
 
     @Test
@@ -93,6 +98,94 @@ class PayUPaymentWebhookControllerTest {
         var response = controller.receivePaymentNotification(request(BODY, "OpenPayu-Signature", SIGNATURE), RESERVATION_ID);
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals("order not paid yet", response.getBody());
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "COMPLETED, transaction not found",
+        "WAITING_FOR_CONFIRMATION, reservation status is not compatible",
+        "COMPLETED, notification refers to a different PayU order"
+    })
+    void discardedPaidNotificationIsLoggedAsError(String status, String reason) {
+        mockResult(PaymentWebhookResult.notRelevant(reason));
+        when(transactionRepository.loadOptionalByReservationId(RESERVATION_ID)).thenReturn(Optional.empty());
+        var body = "{\"order\":{\"orderId\":\"ORDER-1\",\"status\":\"" + status + "\"}}";
+        try (var logs = LogCapture.of(PayUPaymentWebhookController.class)) {
+            var response = controller.receivePaymentNotification(request(body, "OpenPayu-Signature", SIGNATURE), RESERVATION_ID);
+
+            assertEquals(HttpStatus.OK, response.getStatusCode());
+            assertEquals(reason, response.getBody());
+            var errors = logs.messages(Level.ERROR);
+            assertEquals(1, errors.size(), errors.toString());
+            assertTrue(errors.get(0).contains(RESERVATION_ID) && errors.get(0).contains("ORDER-1") && errors.get(0).contains(status), errors.get(0));
+            assertTrue(errors.get(0).contains("refund"), errors.get(0));
+        }
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "ORDER-1, COMPLETE, false",
+        "ORDER-1, PENDING, true",
+        "ORDER-1, CANCELLED, true",
+        "ORDER-2, COMPLETE, true"
+    })
+    void paidNotificationIsAnErrorUnlessItsOrderIsRecordedAsPaid(String transactionOrderId, Transaction.Status transactionStatus, boolean errorExpected) {
+        mockResult(PaymentWebhookResult.notRelevant("reservation status is not compatible"));
+        var transaction = mock(Transaction.class);
+        when(transaction.getPaymentId()).thenReturn(transactionOrderId);
+        when(transaction.getStatus()).thenReturn(transactionStatus);
+        when(transactionRepository.loadOptionalByReservationId(RESERVATION_ID)).thenReturn(Optional.of(transaction));
+        try (var logs = LogCapture.of(PayUPaymentWebhookController.class)) {
+            var response = controller.receivePaymentNotification(request(BODY, "OpenPayu-Signature", SIGNATURE), RESERVATION_ID);
+
+            assertEquals(HttpStatus.OK, response.getStatusCode());
+            assertEquals(errorExpected, logs.messages(Level.ERROR).size() == 1, logs.messages(Level.ERROR).toString());
+        }
+    }
+
+    @Test
+    void discardedUnpaidNotificationIsNotAnError() {
+        mockResult(PaymentWebhookResult.notRelevant("transaction not found"));
+        var body = "{\"order\":{\"orderId\":\"ORDER-1\",\"status\":\"CANCELED\"}}";
+        try (var logs = LogCapture.of(PayUPaymentWebhookController.class)) {
+            controller.receivePaymentNotification(request(body, "OpenPayu-Signature", SIGNATURE), RESERVATION_ID);
+
+            assertTrue(logs.messages(Level.ERROR).isEmpty(), logs.messages(Level.ERROR).toString());
+        }
+        verifyNoInteractions(transactionRepository);
+    }
+
+    @Test
+    void processedNotificationDoesNotLookUpTheTransaction() {
+        mockResult(PaymentWebhookResult.successful(null));
+        controller.receivePaymentNotification(request(BODY, "OpenPayu-Signature", SIGNATURE), RESERVATION_ID);
+        verifyNoInteractions(transactionRepository);
+    }
+
+    @Test
+    void paidNotificationForNonUuidReservationIsOnlyAWarning() {
+        var reservationId = "not-a-reservation";
+        when(purchaseContextManager.findByReservationId(reservationId)).thenReturn(Optional.empty());
+        try (var logs = LogCapture.of(PayUPaymentWebhookController.class)) {
+            var response = controller.receivePaymentNotification(request(BODY, "OpenPayu-Signature", SIGNATURE), reservationId);
+
+            assertEquals(HttpStatus.OK, response.getStatusCode());
+            assertTrue(logs.messages(Level.ERROR).isEmpty(), logs.messages(Level.ERROR).toString());
+            assertEquals(1, logs.messages(Level.WARN).size(), logs.messages(Level.WARN).toString());
+        }
+    }
+
+    @Test
+    void unknownReservationIdIsSanitizedBeforeLogging() {
+        var reservationId = "forged\r\nINFO forged log line";
+        when(purchaseContextManager.findByReservationId(reservationId)).thenReturn(Optional.empty());
+        try (var logs = LogCapture.of(PayUPaymentWebhookController.class)) {
+            controller.receivePaymentNotification(request(BODY, "OpenPayu-Signature", SIGNATURE), reservationId);
+
+            var warnings = logs.messages(Level.WARN);
+            assertEquals(1, warnings.size(), warnings.toString());
+            assertFalse(warnings.get(0).contains("\r") || warnings.get(0).contains("\n"), warnings.get(0));
+        }
     }
 
     @Test
