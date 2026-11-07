@@ -23,6 +23,7 @@ The open source ticket reservation system.
     <li><a href="#contributing-to-alf.io">Contributing to alf.io</a></li>
     <li><a href="#check-dependencies-to-update">Check dependencies to update</a></li>
     <li><a href="#running-docker-containers">Running Docker containers</a></li>
+    <li><a href="#building-the-docker-image-plo-pl-fork">Building the Docker image (plo-pl fork)</a></li>
     <li><a href="#contributors">Contributors</a></li>
     <li><a href="#sponsors">Sponsors</a></li>
 
@@ -182,6 +183,30 @@ Use it at your own risk.
 The certificate at src/main/resources/alfio/certificates/AppleWWDRCAG4.cer has been imported for https://github.com/ryantenney/passkit4j#usage functionality.
 It will expire the 2030-10-12 (YYYY-MM-DD - as of https://www.apple.com/certificateauthority/).
 
+
+## Building the Docker image (plo-pl fork)
+
+The `plo-pl` branch is a fork of alf.io that adds a [PayU](https://www.payu.pl) payment provider
+(BLIK, pay-by-link bank transfers and cards), together with a few fixes for Polish organizers.
+It is built by merging these branches on top of `main`:
+
+- `feature/payu`: the PayU payment provider (backend, public frontend, admin configuration, tests)
+- `fix/mollie-ignore-unsupported-methods`: Mollie ignores payment methods that alf.io does not support
+- `fix/pl-translations`: missing Polish translations for the purchase path and PayU
+- `fix/stepper-active-color`: the active stepper badge uses the theme primary colour
+
+To build the application and the Docker image, run from the repository root:
+
+```
+./gradlew distribution -x test && docker build -t alfio-plo-pl:payu-$(date +%Y%m%d) ./build/dockerize
+```
+
+The image build needs a working Docker (or Podman, with the `docker` command aliased to it) environment.
+The command skips the automated tests: run `./gradlew build` first (it uses TestContainers, so it needs
+Docker or Podman too) if you want the image to come from a tested build.
+
+PayU credentials (POS id, second key, OAuth client id and secret) are not part of the image:
+configure them in the alf.io admin console after the container starts.
 
 
 ## Contributors
