@@ -208,6 +208,76 @@ Docker or Podman too) if you want the image to come from a tested build.
 PayU credentials (POS id, second key, OAuth client id and secret) are not part of the image:
 configure them in the alf.io admin console after the container starts.
 
+`./gradlew distribution -x test` skips the tests, so only run it after a green `./gradlew build` of the
+same commit. Consider tagging the image with the commit SHA too, so a running container can be traced
+back to its source:
+
+```
+docker tag alfio-plo-pl:payu-$(date +%Y%m%d) alfio-plo-pl:payu-$(git rev-parse --short HEAD)
+```
+
+### PayU go-live checklist / runbook
+
+#### Run the image
+
+- Pass the database settings through `ALFIO_JAVA_OPTS`, for example
+  `-e ALFIO_JAVA_OPTS="-Ddatasource.url=jdbc:postgresql://<db-host>:5432/<db> -Ddatasource.username=<user> -Ddatasource.password=<password> -Dspring.profiles.active=jdbc-session"`.
+  Keep the real values in your secret store or an env file, never in this repository.
+- The container listens on port 8080. Put it behind an HTTPS reverse proxy and set the proxy read
+  timeout to at least 120 s: a payment request holds the reservation lock across several PayU calls
+  (10 s timeout each, plus a short wait for an order cancellation to be applied).
+- Use `GET /healthz` for the container and load-balancer health checks.
+
+#### PayU configuration
+
+- Set all six PayU keys (`PAYU_ENABLED`, `PAYU_LIVE_MODE`, `PAYU_POS_ID`, `PAYU_CLIENT_ID`,
+  `PAYU_CLIENT_SECRET`, `PAYU_SECOND_KEY`) at **one** level only: either system or organization.
+  Mixing levels can combine credentials from different POS.
+- In production set `PAYU_LIVE_MODE=true` and use the production POS credentials from the PayU merchant
+  panel. Never leave the public sandbox POS configured.
+- `BASE_URL` must be the public `https://` origin of the installation. PayU sends its notifications to
+  `BASE_URL` + `/api/payment/webhook/payu/reservation/{reservationId}`.
+- Never set `alfio.payu.endpoint-override` in production. It is a test-only property and it is ignored in
+  live mode.
+
+#### Before go-live
+
+1. Delete the reservations created while testing with the sandbox.
+2. From outside your network, check that the notification endpoint is reachable (reverse proxy and
+   firewall let PayU through). A non-empty body for a reservation id that does not exist must return
+   HTTP 200 (`NOT_RELEVANT`); an empty body returns 400:
+
+   ```
+   curl -i -X POST -H 'Content-Type: application/json' -d '{}' \
+     https://<host>/api/payment/webhook/payu/reservation/go-live-check
+   ```
+3. Make one sandbox purchase on the public URL and close the browser tab on the PayU page before it
+   redirects back. The reservation must still become COMPLETE, through the PayU notification alone.
+4. Switch to live mode, make one real 1–2 PLN BLIK purchase, then refund it from the admin console.
+
+#### Daily operations
+
+- Look for reservations waiting on PayU:
+
+  ```sql
+  select id, status, validity, email_address
+  from tickets_reservation
+  where status in ('WAITING_EXTERNAL_CONFIRMATION', 'EXTERNAL_PROCESSING_PAYMENT', 'STUCK')
+  order by validity;
+  ```
+
+- To reconcile one of them with PayU, run a force-check:
+  `curl -X GET https://<host>/api/v2/public/reservation/<reservationId>/transaction/force-check`
+- Alert on ERROR log lines from `alfio.manager.payment.PayUManager` (for example an amount or currency
+  mismatch on a completed order, or a cancellation that PayU did not apply).
+- Before retrying a refund that seems to have failed, check the refunds of the order in the PayU merchant
+  panel: a retry after a refund that actually went through creates a second refund.
+
+#### Rollback
+
+Run the previous image tag again. This change has no database migration, so no database rollback is
+needed.
+
 
 ## Contributors
 
