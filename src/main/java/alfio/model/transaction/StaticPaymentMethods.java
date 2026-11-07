@@ -31,7 +31,8 @@ public enum StaticPaymentMethods implements PaymentMethod {
     PRZELEWY_24,
     ALIPAY,
     POSTFINANCE,
-    TWINT;
+    TWINT,
+    PAYU;
 
     @Override
     public String getPaymentMethodId() {

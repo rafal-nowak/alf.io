@@ -98,6 +98,13 @@ public enum ConfigurationKeys {
     SAFERPAY_CUSTOMER_ID("Customer ID", false, SettingCategory.PAYMENT_SAFERPAY, ComponentType.TEXT, false, EnumSet.of(SYSTEM, ORGANIZATION)),
     SAFERPAY_TERMINAL_ID("Terminal ID", false, SettingCategory.PAYMENT_SAFERPAY, ComponentType.TEXT, false, EnumSet.of(SYSTEM, ORGANIZATION)),
 
+    PAYU_ENABLED("PayU enabled", false, SettingCategory.PAYMENT_PAYU, ComponentType.BOOLEAN, false, EnumSet.of(SYSTEM, ORGANIZATION), BooleanUtils.FALSE),
+    PAYU_LIVE_MODE("Live Mode (default false: sandbox secure.snd.payu.com)", false, SettingCategory.PAYMENT_PAYU, ComponentType.BOOLEAN, false, EnumSet.of(SYSTEM, ORGANIZATION), BooleanUtils.FALSE),
+    PAYU_POS_ID("POS ID (merchantPosId)", false, SettingCategory.PAYMENT_PAYU, ComponentType.TEXT, false, EnumSet.of(SYSTEM, ORGANIZATION)),
+    PAYU_CLIENT_ID("OAuth client_id", false, SettingCategory.PAYMENT_PAYU, ComponentType.TEXT, false, EnumSet.of(SYSTEM, ORGANIZATION)),
+    PAYU_CLIENT_SECRET("OAuth client_secret", false, SettingCategory.PAYMENT_PAYU, ComponentType.TEXT, false, EnumSet.of(SYSTEM, ORGANIZATION)),
+    PAYU_SECOND_KEY("Second key (MD5), used to verify notification signatures", false, SettingCategory.PAYMENT_PAYU, ComponentType.TEXT, false, EnumSet.of(SYSTEM, ORGANIZATION)),
+
 
     SPECIAL_PRICE_CODE_LENGTH("Length of special price code", false, SettingCategory.GENERAL, ComponentType.TEXT, false, EnumSet.of(SYSTEM)),
     MAX_AMOUNT_OF_TICKETS_BY_RESERVATION("How many tickets can be purchased in a single reservation (default 5)", false, SettingCategory.GENERAL, ComponentType.TEXT, false, EnumSet.of(SYSTEM, ORGANIZATION, PURCHASE_CONTEXT, TICKET_CATEGORY)),
@@ -298,6 +305,7 @@ public enum ConfigurationKeys {
         PAYMENT("Payment"),
         PAYMENT_STRIPE("Stripe.com settings"),
         PAYMENT_SAFERPAY("Saferpay settings"),
+        PAYMENT_PAYU("PayU settings"),
         PAYMENT_PAYPAL("PayPal settings"),
         PAYMENT_OFFLINE("Offline payment settings"),
         PAYMENT_MOLLIE("Mollie settings"),
