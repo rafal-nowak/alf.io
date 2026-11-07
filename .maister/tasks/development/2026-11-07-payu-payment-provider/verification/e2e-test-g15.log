@@ -1,0 +1,47 @@
+> Task :generateEffectiveLombokConfig UP-TO-DATE
+> Task :mjml4jToHtml UP-TO-DATE
+> Task :processResources UP-TO-DATE
+> Task :compileJava UP-TO-DATE
+> Task :classes UP-TO-DATE
+> Task :generateTestEffectiveLombokConfig UP-TO-DATE
+> Task :compileTestJava UP-TO-DATE
+> Task :processTestResources UP-TO-DATE
+> Task :testClasses UP-TO-DATE
+OpenJDK 64-Bit Server VM warning: Sharing is only supported for boot loader classes because bootstrap classpath has been appended
+
+> Task :e2eTest
+
+PayUPaymentE2ETest STANDARD_OUT
+        _    _  __  _       
+       / \  | |/ _|(_) ___  
+      / _ \ | | |_ | |/ _ \ 
+     / ___ \| |  _|| | (_) |
+    /_/   \_\_|_|(_)_|\___/ 
+
+    >> powered by Spring Boot
+
+    2026-11-07T16:12:56.959+01:00  INFO 21943 --- [Alf.io] [    Test worker] a.e.PayUPaymentE2ETest                   : Starting PayUPaymentE2ETest using Java 25.0.3 with PID 21943 (started by rafalnowak in /Users/rafalnowak/Dev/alf.io)
+    2026-11-07T16:12:56.962+01:00  INFO 21943 --- [Alf.io] [    Test worker] a.e.PayUPaymentE2ETest                   : The following 4 profiles are active: "dev", "disable-jobs", "integration-test", "e2e"
+    2026-11-07T16:12:57.116+01:00  INFO 21943 --- [Alf.io] [    Test worker] a.e.E2EConfiguration                     : e2e profile detected, outside of CI. Using local headless ChromeDriver
+    2026-11-07T16:12:57.130+01:00  INFO 21943 --- [Alf.io] [    Test worker] a.e.PayUPaymentE2ETest                   : Started PayUPaymentE2ETest in 0.397 seconds (process running for 1.293)
+
+PayUPaymentE2ETest > payWithPayU() STANDARD_OUT
+    2026-11-07T16:12:58.954+01:00  WARN 21943 --- [Alf.io] [    Test worker] o.o.s.d.CdpVersionFinder                 : Unable to find an exact match for CDP version 156, returning the closest version; found: 153; Please update to a Selenium version that supports CDP version 156
+    2026-11-07T16:13:06.039+01:00  INFO 21943 --- [Alf.io] [    Test worker] a.e.AdminConsole                         : saving event e2e-a5035b95-34df-4adc-8a3a-ad5c9fa86d1b
+    2026-11-07T16:13:18.238+01:00  INFO 21943 --- [Alf.io] [    Test worker] a.e.AdminConsole                         : event e2e-a5035b95-34df-4adc-8a3a-ad5c9fa86d1b deleted
+
+PayUPaymentE2ETest > abandonPaymentOnPayU() STANDARD_OUT
+    2026-11-07T16:13:34.577+01:00  WARN 21943 --- [Alf.io] [    Test worker] o.o.s.d.CdpVersionFinder                 : Unable to find an exact match for CDP version 156, returning the closest version; found: 153; Please update to a Selenium version that supports CDP version 156
+    2026-11-07T16:13:42.104+01:00  INFO 21943 --- [Alf.io] [    Test worker] a.e.AdminConsole                         : saving event e2e-6350c7f1-bf79-4211-b330-27c142454465
+    2026-11-07T16:13:52.931+01:00  INFO 21943 --- [Alf.io] [    Test worker] a.e.AdminConsole                         : event e2e-6350c7f1-bf79-4211-b330-27c142454465 deleted
+
+[Incubating] Problems report is available at: file:///Users/rafalnowak/Dev/alf.io/build/reports/problems/problems-report.html
+
+Deprecated Gradle features were used in this build, making it incompatible with Gradle 10.
+
+You can use '--warning-mode all' to show the individual deprecation warnings and determine if they come from your own scripts or plugins.
+
+For more on this, please refer to https://docs.gradle.org/9.7.1/userguide/command_line_interface.html#sec:command_line_warnings in the Gradle documentation.
+
+BUILD SUCCESSFUL in 58s
+8 actionable tasks: 1 executed, 7 up-to-date

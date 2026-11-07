@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Visual Fidelity — PayU payment provider</title>
+<style>:root {
+  --bg:#f6f7f9; --surface:#fff; --border:#e2e5ea; --text:#1a1d23; --dim:#6b7280;
+  --accent:#4f46e5; --accent-soft:#eef2ff; --ok:#16a34a; --ok-soft:#ecfdf3;
+  --warn:#d97706; --warn-soft:#fffbeb; --crit:#dc2626; --crit-soft:#fef2f2;
+  --info:#2563eb; --info-soft:#eff6ff; --radius:10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#111418; --surface:#1a1f26; --border:#2e3640; --text:#e6e9ee; --dim:#9aa4b2;
+    --accent:#818cf8; --accent-soft:#26294a; --ok:#4ade80; --ok-soft:#11291a;
+    --warn:#fbbf24; --warn-soft:#2e2410; --crit:#f87171; --crit-soft:#321616;
+    --info:#60a5fa; --info-soft:#15233a; }
+}
+* { box-sizing:border-box; }
+body { margin:0 auto; max-width:1100px; padding:24px 20px 64px; background:var(--bg);
+  color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+h1 { font-size:22px; letter-spacing:-.01em; } h2 { font-size:16px; margin-top:28px; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px 18px; margin:14px 0; }
+.badge { display:inline-block; font-size:11px; font-weight:600; text-transform:uppercase;
+  letter-spacing:.04em; padding:2px 8px; border-radius:99px; background:var(--accent-soft); color:var(--accent); }
+.sev { display:inline-block; font-size:10.5px; font-weight:700; text-transform:uppercase;
+  padding:1.5px 7px; border-radius:99px; margin-right:6px; }
+.sev.critical { background:var(--crit-soft); color:var(--crit); }
+.sev.warning  { background:var(--warn-soft); color:var(--warn); }
+.sev.info     { background:var(--info-soft); color:var(--info); }
+.pass { color:var(--ok); font-weight:600; } .fail { color:var(--crit); font-weight:600; }
+table { width:100%; border-collapse:collapse; }
+th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+th { font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim); }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
+  background:var(--accent-soft); padding:1px 5px; border-radius:4px; }
+img.shot { max-width:100%; border:1px solid var(--border); border-radius:var(--radius); }
+details > summary { cursor:pointer; font-weight:600; }
+.crumbs { display:flex; gap:14px; font-size:13px; margin-bottom:18px; flex-wrap:wrap; }
+.crumbs a.md { margin-left:auto; color:var(--dim); }
+.crumbs .here { font-weight:650; color:var(--text); }
+.tiles { display:flex; gap:10px; flex-wrap:wrap; margin:14px 0; }
+.tile { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:10px 16px; text-align:center; min-width:90px; }
+.tile b { display:block; font-size:20px; letter-spacing:-.01em; }
+.tile span { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); }
+.verdict { padding:14px 18px; border-radius:var(--radius); font-weight:700; font-size:16px; background:var(--warn-soft); color:var(--warn); border:1px solid var(--warn); }
+.shots { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:10px; margin-top:10px; }
+.shots figure { margin:0; } .shots figcaption { font-size:12px; color:var(--dim); }
+.pair { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+@media (max-width:760px) { .pair { grid-template-columns:1fr; } }
+pre { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:10px; overflow-x:auto; font-size:11.5px; }
+.st-ok { color:var(--ok); font-weight:700; } .st-warn { color:var(--warn); font-weight:700; } .st-drift { color:var(--crit); font-weight:700; }
+</style>
+</head>
+<body>
+<nav class="crumbs"><a href="../dashboard.html">← Dashboard</a><a href="../implementation/spec.html">Spec</a><a href="../implementation/implementation-plan.html">Plan</a><a href="implementation-verification.html">Verification</a><a href="e2e-verification-report.html">E2E</a><span class="here">Visual fidelity</span><a href="visual-fidelity.md" target="_blank" rel="noopener" class="md">md twin ↗</a></nav>
+<header><span class="badge">Visual fidelity · report-only</span><h1>Visual Fidelity Report — PayU payment provider</h1><div style="color:var(--dim)">LLM-judged structural match against ASCII mockups (<a href="../analysis/design-context/ascii/ui-mockups.md" target="_blank" rel="noopener">ui-mockups.md</a>) · does not gate completion</div></header>
+<div class="tiles"><div class="tile"><b>4</b><span>screens compared</span></div><div class="tile"><b class="st-ok">1</b><span>match</span></div><div class="tile"><b class="st-warn">2</b><span>minor deviation</span></div><div class="tile"><b class="st-drift">1</b><span>drift</span></div></div>
+<section class="tldr card"><h2 style="margin-top:0">TL;DR</h2><ul><li>4 design IDs: 1 ✓, 2 ⚠, 1 ✗.</li><li>Selector, panel copy, admin panels and admin icon follow the mockups; the deviations were already accepted in the spec.</li><li>The single ✗ is the stepper badge (#007ACC on feature/payu); the fix is on fix/stepper-active-color.</li></ul>
+<h2>Open Questions / Risks</h2><ul><li>component:stepper-active-badge: confirm at runtime after fix/stepper-active-color is merged.</li></ul></section><main>
+<section class="card"><h2 style="margin-top:0">screen:payment-method-selector — <span class="st-warn">⚠ Minor deviation</span></h2><div class="pair"><div><div style="font-size:12px;color:var(--dim)">Mockup (ASCII)</div><pre>┌─ Overview page · payment section ─────────────────────────────────────────────┐
+│ col-md-5 (radio list, EXISTING loop)    │ col-md-7 (proxy panel)               │
+│                                         │                                      │
+│ ( ) [fa credit-card] Credit card        │  NEW app-payu-payment-proxy          │
+│ ────────────────────────────────────────│  (copy of saferpay-payment-proxy)    │
+│ (•) [fa credit-card] PayU: BLIK,        │                                      │
+│     szybki przelew, karta      ← NEW    │  PayU               ← h4.text-body-  │
+│     input#PAYU  label#PAYU-label        │                        secondary     │
+│     .fw-bold .border-top/.border-bottom │                                      │
+│ ────────────────────────────────────────│  You will be redirected to PayU&#x27;s    │
+│ ( ) [fa money-bill] Bank transfer       │  secure checkout to complete the     │
+│     .text-body-secondary (not selected) │  purchase.    ← .text-body-secondary │
+├─────────────────────────────────────────┴──────────────────────────────────────┤
+│                                    [ Back ]          [ Pay € 120.00 ] EXISTING │
+│                                                       └ reservation-page.pay   │
+└────────────────────────────────────────────────────────────────────────────────┘
+</pre></div><div><div style="font-size:12px;color:var(--dim)">Captured</div><a href="screenshots/07-overview-payu-selected.png"><img class="shot" src="screenshots/07-overview-payu-selected.png" alt="07-overview-payu-selected.png" style="margin-bottom:8px"></a><a href="screenshots/16-cancelled-overview-toast.png"><img class="shot" src="screenshots/16-cancelled-overview-toast.png" alt="16-cancelled-overview-toast.png" style="margin-bottom:8px"></a></div></div><ul><li>Radio <code>#PAYU</code>/<code>#PAYU-label</code>, credit-card icon, EN label ✓ (the mockup shows the PL string from fix/pl-translations)</li><li>Panel h4.text-body-secondary "PayU" + description text match word for word ✓</li><li>"Pay zł 12.30" button ✓</li><li>Deviation: horizontal radio row with the panel below (existing selector layout for 2 methods), not the vertical col-md-5/col-md-7 split</li></ul></section>
+<section class="card"><h2 style="margin-top:0">component:stepper-active-badge — <span class="st-drift">✗ Substantive drift</span></h2><div class="pair"><div><div style="font-size:12px;color:var(--dim)">Mockup (ASCII)</div><pre>  (✓)──────────────(■)──────────────( $ )──────────────( 👍 )
+  green             CURRENT          grey               grey
+  text-bg-success   .wizard2-current .badge
+  Step 1            **Step 2** (bold, black)  Step 3     Step 4
+
+  BEFORE: .wizard2 .wizard2-current .badge { background-color: #007ACC; }
+  AFTER:  .wizard2 .wizard2-current .badge { background-color: var(--bs-primary); }  ← MODIFIED
+</pre></div><div><div style="font-size:12px;color:var(--dim)">Captured</div><a href="screenshots/08-stepper-active-badge.png"><img class="shot" src="screenshots/08-stepper-active-badge.png" alt="08-stepper-active-badge.png" style="margin-bottom:8px"></a></div></div><ul><li>Step structure matches (green done, bold current, grey future) ✓</li><li>Drift: current badge is rgb(0,122,204) #007ACC instead of var(--bs-primary) #0d6efd</li><li>Justification: FR13 is on fix/stepper-active-color (source there has var(--bs-primary)); check after the merge</li></ul></section>
+<section class="card"><h2 style="margin-top:0">screen:admin-payu-settings — <span class="st-warn">⚠ Minor deviation</span></h2><div class="pair"><div><div style="font-size:12px;color:var(--dim)">Mockup (ASCII)</div><pre>┌ panel panel-default ─ EXISTING ────────────────────────────────┐
+│ [fa credit-card] Saferpay                                      │
+├────────────────────────────────────────────────────────────────┤
+│ ...SAFERPAY_* settings...                                      │
+└────────────────────────────────────────────────────────────────┘
+┌ panel panel-default ─ NEW  data-ng-if=&quot;systemConf.paymentPayu&quot; ┐
+│ [fa credit-card] PayU                         .panel-title     │
+├────────────────────────────────────────────────────────────────┤
+│ PAYU_ENABLED        [ toggle      ]                 [delete]   │
+│ PAYU_LIVE_MODE      [ toggle      ]                 [delete]   │
+│ PAYU_POS_ID         [____________ ]                 [delete]   │
+│ PAYU_CLIENT_ID      [____________ ]                 [delete]   │
+│ PAYU_CLIENT_SECRET  [•••••••••••• ]                 [delete]   │
+│ PAYU_SECOND_KEY     [•••••••••••• ]                 [delete]   │
+│  └ &lt;setting data-obj=&quot;setting&quot; data-display-delete-if-needed   │
+│     ng-repeat=&quot;setting in systemConf.paymentPayu.settings&quot;&gt;    │
+└────────────────────────────────────────────────────────────────┘
+</pre></div><div><div style="font-size:12px;color:var(--dim)">Captured</div><a href="screenshots/01-admin-system-payu-panel.png"><img class="shot" src="screenshots/01-admin-system-payu-panel.png" alt="01-admin-system-payu-panel.png" style="margin-bottom:8px"></a><a href="screenshots/22-admin-organization-payu-panel.png"><img class="shot" src="screenshots/22-admin-organization-payu-panel.png" alt="22-admin-organization-payu-panel.png" style="margin-bottom:8px"></a></div></div><ul><li>Bootstrap 3 panel, fa-credit-card "PayU" heading, in system and organization settings ✓</li><li>Field order enabled → live mode → POS ID → client_id → client_secret → second key ✓</li><li>Deviation: secrets in plain text (spec I6, same as the other providers)</li></ul></section>
+<section class="card"><h2 style="margin-top:0">component:admin-payment-icon — <span class="st-ok">✓ Match</span></h2><div class="pair"><div><div style="font-size:12px;color:var(--dim)">Mockup (ASCII)</div><pre>┌ Reservations table (new admin) ───────────────────────────────────────────┐
+│ ID       │ Name          │ Amount    │ Payment          │ Status          │
+├──────────┼───────────────┼───────────┼──────────────────┼─────────────────┤
+│ 3f2a…    │ Jan Kowalski  │ 120,00 zł │ [▭] SAFERPAY     │ COMPLETE        │  EXISTING
+│ 9c1e…    │ Anna Nowak    │  80,00 zł │ [▭] PayU         │ COMPLETE        │  NEW
+│          │               │           │  └ sl-icon name=&quot;credit-card&quot;       │
+│          │               │           │    gray-500 icon, gray-600 small text│
+└──────────┴───────────────┴───────────┴──────────────────┴─────────────────┘
+</pre></div><div><div style="font-size:12px;color:var(--dim)">Captured</div><a href="screenshots/20-new-admin-reservations-payu-icon.png"><img class="shot" src="screenshots/20-new-admin-reservations-payu-icon.png" alt="20-new-admin-reservations-payu-icon.png" style="margin-bottom:8px"></a><a href="screenshots/21-new-admin-transactions-payu-icon.png"><img class="shot" src="screenshots/21-new-admin-transactions-payu-icon.png" alt="21-new-admin-transactions-payu-icon.png" style="margin-bottom:8px"></a></div></div><ul><li>sl-icon credit-card + method text in the Payment column ✓</li><li>Text is raw "PAYU"; the spec and the mockup note say the raw value is expected</li></ul></section>
+</main>
+</body>
+</html>

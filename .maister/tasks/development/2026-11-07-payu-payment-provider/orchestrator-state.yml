@@ -1,0 +1,129 @@
+orchestrator:
+  started_phase: phase-1
+  completed_phases: [phase-1, phase-2, phase-3, phase-4, phase-5, phase-6, phase-7, phase-8, phase-9, phase-10, phase-11, phase-12, phase-13, phase-14]
+  tdd_red_passed: true
+  tdd_green_passed: true
+  failed_phases: []
+  auto_fix_attempts: {}
+  options:
+    sequential: null
+    html_output: true
+    mockup_format: html
+    spec_audit_enabled: true
+    skip_test_suite: false
+    e2e_enabled: true
+    user_docs_enabled: true
+    autonomous_mode: true
+    code_review_enabled: true
+    pragmatic_review_enabled: true
+    reality_check_enabled: true
+    production_check_enabled: true
+  created: "2026-11-07T12:04:32Z"
+  updated: "2026-11-07T16:50:17Z"
+  task_path: .maister/tasks/development/2026-11-07-payu-payment-provider
+  task_ids: {}
+task:
+  title: "Complete PayU payment provider for alf.io fork"
+  description: "Finish PayU provider on feature/payu: webhook controller, public + admin frontend, translations (EN/PL), unit + integration tests, e2e on public PayU sandbox, side commits for missing PL translations / active step icon color, Docker image build command; branches feature/payu, translation fix branch, plo-pl integration branch; no AI trailers in commits; no upstream PRs."
+  status: completed
+  tags: [payments, payu, backend, frontend, i18n]
+  priority: high
+task_context:
+  risk_level: medium-high
+  clarifications_resolved: true
+  scope_expanded: false
+  architecture_decision: "Extend PaymentProvider capabilities (WebhookHandler, RefundRequest, PaymentInfo, ServerInitiatedTransaction); Mollie-style order reuse; Mollie webhook + Saferpay callback controllers"
+  tech_clarified: true
+  task_characteristics:
+    has_reproducible_defect: true
+    modifies_existing_code: true
+    creates_new_entities: true
+    involves_data_operations: true
+    ui_heavy: true
+  research_reference:
+    path: null
+    research_question: null
+    research_type: null
+    confidence_level: null
+  design_reference:
+    source: phase-4-ascii
+    product_design_path: null
+    mockup_count: 4
+    has_brief: false
+    index_path: analysis/design-context/INDEX.md
+  project_context:
+    project_doc_paths: []
+  phase_summaries:
+    codebase_analysis:
+      summary: "WIP PayU backend follows conventions but has lifecycle bugs (double charge B1, no validity/remote cancel B2/B3, refund notification retries B5); webhook + return controllers, frontend, admin, i18n, tests missing; API descriptor must be regenerated."
+      key_files: [src/main/java/alfio/manager/payment/PayUManager.java, src/main/java/alfio/manager/payment/payu/PayUSignature.java, src/main/java/alfio/model/transaction/webhook/PayUWebhookPayload.java, frontend/public/src/app/model/event.ts, src/test/resources/api/descriptor.json]
+      primary_language: java
+      decisions: []
+      risks: ["Build blocker: CheckRestApiStability descriptor.json must be regenerated", "E2E target: do not use the container on port 8090 (other project)"]
+      artifacts: [{path: analysis/codebase-analysis.md, label: Codebase analysis, html: null}, {path: analysis/clarifications.md, label: Clarifications, html: null}]
+    clarifications:
+      - "PL translations: separate fork-only branch merged into plo-pl"
+      - "Stepper active badge: var(--bs-primary)"
+      - "E2E: return + force-check, no tunnel"
+      - "customerIp: new optional field in PaymentSpecification"
+    gap_analysis:
+      summary: "Feature ~25% complete: no notification controller, no frontend component, no admin labels/panels, no tests, API descriptor blocker, lifecycle defects B1-B3/B5. Additive change, strict compatibility for other providers."
+      integration_points: [PaymentManager provider list, TicketReservationManager.processTransactionWebhook, forceTransactionCheck, ReservationApiV2Controller, payment-method-selector, alfio-admin-v1 settings panels]
+      decisions: []
+      risks: ["feature/payu is stacked on Mollie commit ea770e35f", "PayU supports only some currencies", "Public sandbox POS is shared; e2e may be flaky"]
+      artifacts: [{path: analysis/gap-analysis.md, label: Gap analysis, html: null}, {path: analysis/scope-clarifications.md, label: Scope clarifications, html: null}]
+    ui_mockups:
+      summary: "4 ASCII mockups (payment selector + payu proxy panel, stepper badge, legacy admin PayU panel, new admin icon); all reuse existing components."
+      format_used: ascii
+      components_designed: [screen:payment-method-selector, component:stepper-active-badge, screen:admin-payu-settings, component:admin-payment-icon]
+      decisions: []
+      risks: ["organization.html #PAYMENT header ng-if must include paymentPayu"]
+      artifacts: [{path: analysis/design-context/ascii/ui-mockups.md, label: ASCII mockups, html: null}, {path: analysis/design-context/INDEX.md, label: Design index, html: null}]
+    design:
+      summary: "Design context from Phase 4 ASCII mockups; binding layout = existing Saferpay patterns."
+      screen_count: 2
+      component_count: 2
+      index_path: analysis/design-context/INDEX.md
+    scope_clarifications:
+      scope_expanded: false
+      summary: "All decisions C1, C2, I1-I6 auto-approved with recommended options per user instruction (autonomous mode)."
+    spec_audit:
+      summary: "pass-with-concerns: 0 critical, 3 high (failed read -> second order, COMPLETED leaves tx PENDING, DELETE failure), 7 medium, 9 low; all applied to spec via Audit amendments section."
+      decisions: [{decision: "Apply all audit fixes (auto-approved)", rationale: "money safety"}]
+      risks: []
+      artifacts: [{path: verification/spec-audit.md, label: Spec audit, html: null}]
+    planning:
+      summary: "19 task groups / 113 steps; Java chain G1-G9,G13,G14; parallel G10-G12 after G4; side branches G16/G17 in worktrees; G15 e2e sandbox; G18 descriptor+build; G19 plo-pl + image (pushes deferred to Phase 14)."
+      decisions: [{decision: "Pushes moved from G19 to Phase 14 finalization", rationale: "publish only after verification and e2e (orchestrator decision)"}]
+      risks: ["Concurrent commits on feature/payu (index.lock)", "Sandbox behaviour unverified until G15", "Busy ports 5432/8080/8090"]
+      artifacts: [{path: implementation/implementation-plan.md, label: Implementation plan, html: implementation/implementation-plan.html}, {path: implementation/visual-coverage.md, label: Visual coverage, html: null}]
+    implementation:
+      summary: "19 groups + G15b done in 14 waves; feature/payu 14 commits; side branches fix/pl-translations, fix/stepper-active-color; plo-pl local with README + image alfio-plo-pl:payu-20261107. Full build green (1047 / plo-pl 1050), sandbox E2E 2/2. Pushes and .maister commit deferred to Phase 14."
+      decisions:
+        - {decision: "G15b: cancel confirmed only by re-read (DELETE SUCCESS on COMPLETED order seen on sandbox)", rationale: "money safety (auto-approved)"}
+        - {decision: "Bounded re-read 5x500 ms after accepted DELETE", rationale: "sandbox applies cancel asynchronously (E2E regression)"}
+        - {decision: "IPv6 customerIp normalized (brackets/zone stripped)", rationale: "PayU rejects bracketed IPv6"}
+      risks: ["Up to ~2 s sleep under reservation lock on cancel", "Polish wording review (subskrypcja vs karnet)"]
+      artifacts: [{path: implementation/work-log.md, label: Work log, html: null}, {path: implementation/tdd-green-gate.md, label: TDD green gate, html: null}, {path: verification/e2e-test.log, label: E2E log, html: null}]
+    e2e:
+      summary: "6/6 scenarios passed on local server + public PayU sandbox (2 with expected branch-scope caveats: stepper colour and PL keys live on side branches). Visual fidelity 1 match / 2 minor / 1 drift (stepper, branch scope)."
+      decisions: [{decision: "Exclude screenshot 01 (shows sandbox keys) from the plo-pl .maister commit", rationale: "never publish credentials, even public sandbox ones"}]
+      risks: ["Test data left in dedicated e2e DB (event payu-verify-1107)"]
+      artifacts: [{path: verification/e2e-verification-report.md, label: E2E report, html: verification/e2e-verification-report.html}, {path: verification/visual-fidelity.md, label: Visual fidelity, html: verification/visual-fidelity.html}]
+    user_docs:
+      summary: "Polish user guide (attendee payment flow + organizer configuration, refunds, go-live checklist, troubleshooting) with 14 screenshots, no secrets shown."
+      decisions: [{decision: "Added missing PL keys reservation.payment-processing.delay/warning.message on fix/pl-translations (739683de0)", rationale: "found during docs; Polish attendees would see EN on the processing screen"}]
+      risks: []
+      artifacts: [{path: documentation/user-guide.md, label: User guide (PL), html: null}]
+    specification:
+      summary: "Spec FR1-FR15: lifecycle matrix, NEW->NOT_RELEVANT, total payload parsing after valid signature, callback controller, customerIp wither, endpoint override property for WireMock, currency gating, 8 test groups, 9-commit branch plan."
+      decisions:
+        - {decision: "Abandoned NEW order cancelled only when PayU appends error=501; otherwise expires via validityTime + cleanup", rationale: "avoid cancelling an order still being paid in another tab (auto-approved)"}
+      risks: ["Shared public sandbox POS 300746", "WAITING_FOR_CONFIRMATION at expiry captured then reservation deleted (rare, WARN)", "descriptor.json regeneration per branch"]
+      artifacts: [{path: implementation/spec.md, label: Specification, html: implementation/spec.html}, {path: analysis/requirements.md, label: Requirements, html: null}]
+verification_context:
+  last_status: passed_with_issues
+  issues_found: ["PR-B1", "PR-B2", "PR-B3", "CR-W3", "CR-W4", "PG-W2", "CP-W3", "PR-W4", "PR-W6", "PR-W7", "PR-W8", "PR-W2", "PR-W5", "PR-W10", "PR-W11", "CR-I5", "CR-I11", "RC-I7", "RC-I1", "RV-Q1"]
+  fixes_applied: ["CR-W1", "CR-W2", "PG-W1", "PG-W3", "CP-W1", "CP-W2", "PR-W1", "PR-W3", "PR-W9", "CR-I1", "CR-I2", "CR-I3", "CR-I4", "CR-I8", "CR-I10", "RV-N1", "RV-N2", "RV-N3", "RV-N4", "RV-N5", "RV-N6"]
+  decisions_made: ["Phase 10: all standard verifications + E2E + user docs enabled (auto-approved, autonomous mode)"]
+  reverify_count: 1

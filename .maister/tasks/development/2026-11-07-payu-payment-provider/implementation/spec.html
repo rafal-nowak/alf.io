@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Specification — PayU payment provider</title>
+<style>
+:root {
+  --bg:#f6f7f9; --surface:#fff; --border:#e2e5ea; --text:#1a1d23; --dim:#6b7280;
+  --accent:#4f46e5; --accent-soft:#eef2ff; --ok:#16a34a; --ok-soft:#ecfdf3;
+  --warn:#d97706; --warn-soft:#fffbeb; --crit:#dc2626; --crit-soft:#fef2f2;
+  --info:#2563eb; --info-soft:#eff6ff; --radius:10px;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg:#111418; --surface:#1a1f26; --border:#2e3640; --text:#e6e9ee; --dim:#9aa4b2;
+    --accent:#818cf8; --accent-soft:#26294a; --ok:#4ade80; --ok-soft:#11291a;
+    --warn:#fbbf24; --warn-soft:#2e2410; --crit:#f87171; --crit-soft:#321616;
+    --info:#60a5fa; --info-soft:#15233a; }
+}
+* { box-sizing:border-box; }
+body { margin:0 auto; max-width:1100px; padding:24px 20px 64px; background:var(--bg);
+  color:var(--text); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+h1 { font-size:22px; letter-spacing:-.01em; } h2 { font-size:16px; margin-top:28px; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:16px 18px; margin:14px 0; }
+.badge { display:inline-block; font-size:11px; font-weight:600; text-transform:uppercase;
+  letter-spacing:.04em; padding:2px 8px; border-radius:99px; background:var(--accent-soft); color:var(--accent); }
+.sev { display:inline-block; font-size:10.5px; font-weight:700; text-transform:uppercase;
+  padding:1.5px 7px; border-radius:99px; margin-right:6px; }
+.sev.critical { background:var(--crit-soft); color:var(--crit); }
+.sev.warning  { background:var(--warn-soft); color:var(--warn); }
+.sev.info     { background:var(--info-soft); color:var(--info); }
+.pass { color:var(--ok); font-weight:600; } .fail { color:var(--crit); font-weight:600; }
+table { width:100%; border-collapse:collapse; }
+th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border); vertical-align:top; }
+th { font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--dim); }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
+  background:var(--accent-soft); padding:1px 5px; border-radius:4px; }
+img.shot { max-width:100%; border:1px solid var(--border); border-radius:var(--radius); }
+details > summary { cursor:pointer; font-weight:600; }
+.crumbs { display:flex; gap:14px; font-size:13px; margin-bottom:18px; flex-wrap:wrap; }
+.crumbs a.md { margin-left:auto; color:var(--dim); }
+.crumbs .here { font-weight:650; color:var(--text); }
+.tiles { display:flex; gap:10px; flex-wrap:wrap; margin:14px 0; }
+.tile { background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+  padding:10px 16px; text-align:center; min-width:90px; }
+.tile b { display:block; font-size:20px; letter-spacing:-.01em; }
+.tile span { font-size:10.5px; text-transform:uppercase; letter-spacing:.05em; color:var(--dim); }
+/* extensions */
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+@media (max-width:760px) { .grid2 { grid-template-columns:1fr; } .crumbs a.md { margin-left:0; } }
+.scope-in { border-left:4px solid var(--ok); } .scope-out { border-left:4px solid var(--dim); }
+.story { border-left:4px solid var(--accent); }
+.tldr { border-left:4px solid var(--accent); }
+ul.tight { margin:6px 0; padding-left:20px; } ul.tight li { margin:3px 0; }
+.toc { font-size:13px; color:var(--dim); margin:10px 0 4px; }
+.green { background:var(--ok-soft); }
+td code, li code { word-break:break-word; }
+.table-wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<nav class="crumbs">
+  <a href="../dashboard.html">← Dashboard</a>
+  <span class="here">Spec</span>
+  <a href="implementation-plan.html">Plan</a>
+  <a href="../verification/spec-audit.md" target="_blank" rel="noopener">Spec audit ↗</a>
+  <a href="../verification/implementation-verification.html">Verification</a>
+  <a href="spec.md" target="_blank" rel="noopener" class="md">md twin ↗</a>
+</nav>
+
+<header>
+  <span class="badge">Specification</span> <span class="badge" style="background:var(--ok-soft);color:var(--ok)">audit amendments applied</span>
+  <h1>PayU payment provider (BLIK, fast transfers, cards)</h1>
+  <div style="color:var(--dim);font-size:13px">Generated 2026-11-07 · task <code>2026-11-07-payu-payment-provider</code> · branch <code>feature/payu</code> (WIP 2259c9313)</div>
+</header>
+
+<div class="tiles">
+  <div class="tile"><b>15</b><span>requirements</span></div>
+  <div class="tile"><b>22</b><span>reused components</span></div>
+  <div class="tile"><b>5</b><span>new components</span></div>
+  <div class="tile"><b>6</b><span>red-gate tests to turn green</span></div>
+  <div class="tile"><b>19</b><span>audit amendments</span></div>
+  <div class="tile"><b style="color:var(--warn)">med-high</b><span>risk</span></div>
+</div>
+
+<section class="card tldr">
+  <h2 style="margin-top:0">TL;DR</h2>
+  <p>Finish the PayU REST v2.1 provider drafted in commit 2259c9313. The attendee is redirected to the PayU hosted page and comes back to a new return callback. Signed notifications and a force-check confirm the payment.</p>
+  <p><code>PayUManager</code> gets a money-safe order lifecycle. A new order is created only after the previous one is confirmed CANCELED or not found, or is confirmed deleted. Once a payable order may exist, the manager never returns <code>failed</code>. It also gets a tri-state order read, a shared cancel routine (DELETE) and <code>validityTime</code>, plus the M4–M8 hardening. All 6 red-gate tests turn green.</p>
+  <p>New: <code>PayUPaymentWebhookController</code>, <code>PayUCallbackController</code>, the public <code>payu-payment-proxy</code>, admin labels and panels, EN i18n, an optional <code>customerIp</code> on <code>PaymentSpecification</code>, a currency hook in <code>BaseE2ETest</code>, and unit, WireMock integration and sandbox e2e tests. There is no Flyway migration and no change to <code>TicketReservationManager</code>.</p>
+  <p>The work ships on <code>feature/payu</code>, <code>fix/pl-translations</code>, <code>fix/stepper-active-color</code> and <code>plo-pl</code>, all pushed, with no upstream PRs and no AI trailers.</p>
+
+  <h2>Key Decisions</h2>
+  <ul class="tight">
+    <li><b>Re-confirm with an existing PENDING transaction</b>, matrix below:
+      <ul class="tight">
+        <li>COMPLETED and validated → transaction COMPLETE (shared routine), then success.</li>
+        <li>PENDING → pending. WAITING_FOR_CONFIRMATION → capture, then pending.</li>
+        <li>NEW → shared cancel; a new order only when the cancel is confirmed, otherwise pending.</li>
+        <li>A confirmed CANCELED or NOT_FOUND → create a new order.</li>
+        <li>A read ERROR or a COMPLETED mismatch → pending, keeping the transaction.</li>
+        <li><b>Rule: never return <code>failed</code> once a remote order may still be payable.</b> The status <i>read</i> has no side effects. The COMPLETED branch updates the transaction and the WAITING branch captures.</li>
+      </ul>
+    </li>
+    <li><b>The order read is tri-state</b>: <code>retrieveOrder</code> returns FOUND, NOT_FOUND or ERROR (timeout, I/O, 5xx, 401 after the retry, bad body).</li>
+    <li><b>Cancelling is one shared routine</b> used by the NEW row and by <code>discardTransaction</code>. <s>It counts as cancelled only when the body has <code>status.statusCode == SUCCESS</code> (whatever the HTTP code), or when a re-read shows CANCELED.</s> <i>(Superseded by post-implementation amendment PI1/PI2: after the DELETE the order is always re-read, and only a CANCELED or NOT_FOUND re-read counts as cancelled.)</i></li>
+    <li><b>A NEW order, by context</b>: NOT_RELEVANT in webhooks; <code>error</code> in <code>forceTransactionCheck</code>, which core treats as "no action" and turns into pending.
+      <ul class="tight">
+        <li>Why: the stuck check marks a reservation STUCK when it gets NOT_RELEVANT, and the red gate forbids TRANSACTION_INITIATED for NEW.</li>
+        <li>ERROR is the only non-state-changing result that satisfies both.</li>
+      </ul>
+    </li>
+    <li><b>After a valid signature, a payload is always returned</b>. Refunds, unknown shapes and <code>extOrderId</code> mismatches give NOT_RELEVANT (200). Only an invalid signature or unparseable JSON gives 500. That is intentional: PayU retries, so a wrong second key that an admin later fixes is self-healing.</li>
+    <li><b>Webhook for an unknown reservation</b> → 200 + WARN. Only an empty body → 400.</li>
+    <li><b>Return callback</b>:
+      <ul class="tight">
+        <li>With <code>error</code>: cancel, then overview + toast. The toast also shows when the cancel fails but no pending transaction is left.</li>
+        <li>Without <code>error</code>: force-check. A failure goes to the overview + toast, and anything else to <code>/book</code>.</li>
+        <li>A NEW order with no <code>error</code> counts as in progress. It ends when PayU auto-cancels at <code>validityTime</code>.</li>
+      </ul>
+    </li>
+    <li><b>Showing the cancellation</b>: query parameter <code>paymentCancelled=true</code> shows the toast with the new EN key <code>reservation-page.payment.cancelled</code> (one key beyond FR12).</li>
+    <li><b>Refund idempotency</b>: <code>extRefundId</code> = <code>&lt;rid&gt;-refund-&lt;amountCents&gt;-&lt;k+1&gt;</code> (k from GET refunds). A timeout or I/O failure triggers a re-read, and a refund carrying that id counts as success. <i>(Scope clarified by PI5: this protects a same-call retry and concurrent duplicates, not an operator retry after a refund that landed.)</i></li>
+    <li><b>customerIp</b>: a nullable field plus a <code>withCustomerIp</code> wither. Every existing constructor keeps its signature. IP = first XFF entry, else <code>remoteAddr</code>, else <code>127.0.0.1</code>.</li>
+    <li><b>Endpoint override</b> for tests: <code>alfio.payu.endpoint-override</code> via a second <code>@Autowired</code> constructor. The public 5-arg constructor stays, and a WARN is logged when the override is set. <i>(PI7: ignored in live mode.)</i></li>
+    <li><b>Currency gating</b> (I3) in <code>isActive</code> when a purchase context is present.</li>
+    <li><b>Labels</b>: "PayU: BLIK, fast transfer, card" (EN) and "PayU: BLIK, szybki przelew, karta" (PL). The new admin shows the raw <code>PAYU</code> with the <code>credit-card</code> icon.</li>
+    <li><b>Secrets stay plain TEXT</b> (I6). <b>Gson stays</b> for PayU JSON.</li>
+  </ul>
+
+  <h2>Open Questions / Risks</h2>
+  <ul class="tight">
+    <li><span class="sev warning">warning</span><b>The public sandbox POS 300746 is shared.</b> Its page markup must be verified live, and it probably accepts only PLN (hence the e2e currency hook).</li>
+    <li><span class="sev warning">warning</span><b>DELETE on a PENDING order is unverified.</b> <i>(Resolved on the sandbox, see PI4: DELETE on PENDING → CANCELED, no funds after.)</i> If PayU refuses it, the order counts as not cancelled: discard returns false and re-confirm returns pending. If funds can still arrive, restrict the DELETE to NEW.</li>
+    <li><span class="sev warning">warning</span><b>A NEW order past the reservation validity</b> gives ERROR in the stuck check (no STUCK). The reservation is held until PayU auto-cancels; if PayU never does, tickets are held with only a WARN log.</li>
+    <li><span class="sev warning">warning</span><b>WAITING_EXTERNAL_CONFIRMATION gap</b> (inherited core behaviour): no scheduler selects it. A lost final notification holds tickets until a force-check runs.</li>
+    <li><span class="sev info">info</span><b>WAITING_FOR_CONFIRMATION in the stuck check</b>: captured and reported as pending (not stuck). It completes on the next run.</li>
+    <li><span class="sev warning">warning</span><b>A COMPLETED mismatch</b> gives ERROR in webhooks and pending in doPayment, so PayU retries. Money can sit captured until a manual refund.</li>
+    <li><span class="sev info">info</span><b>POST <code>/orders</code> timeout after PayU created the order</b>: <code>failed</code>. The order is unreachable by the buyer and auto-cancelled at <code>validityTime</code>.</li>
+    <li><span class="sev info">info</span><b>Lock duration</b>: up to about 5 calls × 10 s under the reservation row lock (worst case about 50 s). A reverse-proxy timeout above 60 s is recommended. <i>(Superseded by PI6: the bound also includes the cancel polling budget; recommend a reverse-proxy read timeout ≥ 120 s.)</i></li>
+    <li><span class="sev info">info</span><b>No connect timeout</b> on the shared <code>HttpClient</code>.</li>
+    <li><span class="sev info">info</span><b>XFF can be spoofed</b>, and <code>remoteAddr</code> can be IPv6: check that PayU accepts IPv6.</li>
+    <li><span class="sev info">info</span><b>The descriptor must be regenerated</b> on <code>feature/payu</code> and on <code>plo-pl</code>. The new branches do not exist yet, and the backup ref is local only.</li>
+  </ul>
+</section>
+
+<div class="toc">Contents: <a href="#goal">Goal &amp; scope</a> · <a href="#requirements">Requirements</a> · <a href="#stories">User stories</a> · <a href="#visual">Visual design</a> · <a href="#components">Components</a> · <a href="#technical">Technical approach</a> · <a href="#tests">Tests</a> · <a href="#branches">Branches</a> · <a href="#success">Success criteria</a> · <a href="#audit">Audit amendments</a> · <a href="#post-impl">Post-implementation amendments</a></div>
+
+<main>
+<h2 id="goal">Goal &amp; scope</h2>
+<div class="card">Make PayU a production-ready alf.io payment proxy. It must be configurable at system or organization level, offered to attendees as "PayU: BLIK, fast transfer, card", and confirmed reliably by return + force-check and by signed notifications. It must never double-charge, leave payable orphan orders, or cause endless notification retries.</div>
+<div class="grid2">
+  <div class="card scope-in">
+    <b>In scope</b>
+    <ul class="tight">
+      <li>PayUManager lifecycle fixes (B1–B5, M1–M3) and hardening (M4–M8)</li>
+      <li>Webhook controller and return callback controller</li>
+      <li><code>customerIp</code> via <code>PaymentSpecification</code></li>
+      <li>Public <code>payu-payment-proxy</code>, model entries, overview cancellation toast</li>
+      <li>Legacy admin label and panels; new admin union and icon</li>
+      <li>EN i18n (feature/payu); PL keys (fix/pl-translations)</li>
+      <li>Stepper badge <code>var(--bs-primary)</code> (fix/stepper-active-color)</li>
+      <li>Unit, WireMock integration and sandbox e2e tests (PLN via the <code>BaseE2ETest</code> hook); API descriptor regenerated</li>
+      <li>Docker build documented in README (plo-pl); all branches and the backup ref pushed</li>
+    </ul>
+  </div>
+  <div class="card scope-out">
+    <b>Out of scope</b>
+    <ul class="tight">
+      <li>A PayU logo asset, masked secret inputs, and a PayU settings page in the new admin</li>
+      <li>A notification tunnel for e2e (the integration test covers notifications)</li>
+      <li>Full PL translation of all 328 keys (purchase-path keys only)</li>
+      <li>Upstream PRs</li>
+      <li>Changes to <code>TicketReservationManager</code>, <code>PaymentManager</code>, the shared <code>HttpClient</code> bean, or Flyway (including the WAITING_EXTERNAL_CONFIRMATION scheduler gap and the stuck-check semantics)</li>
+      <li>PayU card tokenization or recurring payments</li>
+      <li>Reusing an open PayU order by redirecting to a stored <code>redirectUri</code> (Mollie style)</li>
+    </ul>
+  </div>
+</div>
+
+<h2 id="requirements">Core requirements</h2>
+<div class="card table-wrap">
+<table>
+<tr><th>ID</th><th>Requirement</th><th>Priority</th></tr>
+<tr><td>FR1</td><td>Order creation: OAuth, POST <code>/api/v2_1/orders</code> with continueUrl = callback, customerIp, validityTime, unique extOrderId, buyer, products. 302 + JSON parsed. Reservation → EXTERNAL_PROCESSING_PAYMENT, transaction PENDING, validity aligned.</td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR2</td><td>Re-confirm with an existing PENDING transaction: the state matrix (no second order, no <code>failed</code> while an order may be payable)</td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR3</td><td>Notification endpoint POST <code>/api/payment/webhook/payu/reservation/{id}</code></td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR4</td><td>Status mapping, with COMPLETED validated; NEW → NOT_RELEVANT (webhook) or error/no-op (force-check)</td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR5</td><td><code>discardTransaction</code> via the shared cancel routine, reached through <code>cancelPendingPayment</code> (<code>reTransitionToPending</code> is DB-only); <code>initTransaction</code> unsupported</td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR6</td><td>GET return callback (<code>error</code> → cancel → overview; else force-check → /book)</td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR7</td><td>Refund with a deterministic, retry-safe <code>extRefundId</code>; <code>getInfo</code> paid and refunded</td><td><span class="sev warning">should</span></td></tr>
+<tr><td>FR8</td><td>Currency gating (PLN, EUR, USD, CZK, GBP, HUF, RON, BGN, DKK, NOK, SEK, CHF)</td><td><span class="sev warning">should</span></td></tr>
+<tr><td>FR9</td><td>Per-request HTTP timeouts (10 s); shared bean unchanged</td><td><span class="sev warning">should</span></td></tr>
+<tr><td>FR10</td><td>Public frontend: PAYU model entries, payu-payment-proxy, registration, cancellation toast</td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR11</td><td>Admin: legacy label and panels (including the <code>#PAYMENT</code> ng-if); new admin union and icon</td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR12</td><td>i18n: EN on feature/payu; PL on fix/pl-translations</td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR13</td><td>Stepper active badge <code>var(--bs-primary)</code></td><td><span class="sev info">could</span></td></tr>
+<tr><td>FR14</td><td>Unit, integration, descriptor and sandbox e2e (PLN) tests</td><td><span class="sev critical">must</span></td></tr>
+<tr><td>FR15</td><td>Docker build documented in README on plo-pl</td><td><span class="sev info">could</span></td></tr>
+</table>
+</div>
+
+<h2 id="stories">User stories</h2>
+<div class="grid2">
+  <div class="card story"><b>Attendee</b><br>I want to pick PayU on the overview, pay with BLIK, a fast transfer or a card on PayU's page, and land on my confirmation. This lets me buy a ticket with the methods common in Poland.</div>
+  <div class="card story"><b>Attendee who cancels on PayU</b><br>I want to come back to the overview with a clear message and pick a method again, so that I am not stuck on a "payment in progress" page.</div>
+  <div class="card story"><b>Attendee who presses "Pay" twice</b><br>I want the second attempt not to create a second payable order, so that I am never charged twice.</div>
+  <div class="card story"><b>Organization / system admin</b><br>I want a PayU panel in the payment settings, so that I can configure PayU without touching the database.</div>
+  <div class="card story"><b>Reservation operator</b><br>I want PayU reservations labelled with a card icon, and I want to refund them in full or in part (also when I retry after a timeout), so that I can handle cancellations.</div>
+</div>
+
+<h2 id="visual">Visual design</h2>
+<div class="card">
+<p>Mockups in <code>analysis/design-context/</code> are binding inputs. The implementation-planner will attach <code>Visual References</code> to the UI task groups. All are ASCII at layout fidelity and reuse existing components. See also <a href="../analysis/design-context/design-resources.md" target="_blank" rel="noopener">design-resources.md ↗</a>.</p>
+<div class="table-wrap">
+<table>
+<tr><th>ID</th><th>Mockup</th><th>Key elements</th></tr>
+<tr><td><code>screen:payment-method-selector</code></td><td><a href="../analysis/design-context/ascii/ui-mockups.md" target="_blank" rel="noopener">ui-mockups.md#payment-method-selector ↗</a></td><td>A PAYU radio from the existing loop (<code>fas credit-card</code>, <code>reservation-page.payment-method.payu</code>). The new <code>app-payu-payment-proxy</code> panel (h4 "PayU" and the description key) goes next to Saferpay. "Pay &lt;price&gt;" is the existing button.</td></tr>
+<tr><td><code>component:stepper-active-badge</code></td><td><a href="../analysis/design-context/ascii/ui-mockups.md" target="_blank" rel="noopener">ui-mockups.md#stepper-active-badge ↗</a></td><td><code>.wizard2-current .badge</code> <code>#007ACC</code> → <code>var(--bs-primary)</code></td></tr>
+<tr><td><code>screen:admin-payu-settings</code></td><td><a href="../analysis/design-context/ascii/ui-mockups.md" target="_blank" rel="noopener">ui-mockups.md#admin-payu-settings ↗</a></td><td>A Bootstrap 3 panel with <code>&lt;setting&gt;</code> in <code>ng-repeat</code>, in system.html and organization.html, plus <code>paymentPayu</code> in the <code>#PAYMENT</code> ng-if. Secrets render as plain text (I6).</td></tr>
+<tr><td><code>component:admin-payment-icon</code></td><td><a href="../analysis/design-context/ascii/ui-mockups.md" target="_blank" rel="noopener">ui-mockups.md#admin-payment-icon ↗</a></td><td><code>paymentMethodIcon()</code> maps <code>PAYU</code> to <code>credit-card</code>; the raw <code>PAYU</code> text is shown</td></tr>
+</table>
+</div>
+</div>
+
+<h2 id="components">Reusable vs new components</h2>
+<div class="card table-wrap">
+<table>
+<tr><th>Type</th><th>Component</th><th>Path</th><th>Use</th></tr>
+<tr><td><span class="badge">reuse</span></td><td>PayU draft</td><td><code>manager/payment/PayUManager.java</code>, <code>payu/PayUSignature.java</code>, <code>PayUWebhookPayload</code>, <code>PayUToken</code></td><td>Complete and fix; <code>retrieveOrder</code> becomes tri-state; the payload gains a kind</td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Config, proxy, method</td><td><code>ConfigurationKeys</code> L101–106/L308, <code>PaymentProxy.PAYU</code>, <code>StaticPaymentMethods.PAYU</code></td><td>Already present</td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Provider capabilities</td><td><code>model/transaction/capabilities/*</code></td><td>Adds <code>ServerInitiatedTransaction</code></td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Reservation lifecycle</td><td><code>TicketReservationManager</code> (performPayment, cancelPendingPayment, cleanup = PENDING only, stuck check L1110–1140, webhook, forceTransactionCheck)</td><td>Unchanged contract</td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Completion precedent</td><td><code>SaferpayManager.doPayment</code> → <code>internalProcessWebhook</code> L128–133</td><td>The provider marks the transaction COMPLETE itself</td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Mollie re-confirm, validity and cache</td><td><code>MollieWebhookPaymentManager</code> L280–298, L351, L112–114</td><td>Check-before-create and validity. Mollie reuses an open payment; PayU's C1 cancels and recreates</td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Webhook / callback templates</td><td><code>MolliePaymentWebhookController</code>, <code>SaferpayCallbackController</code></td><td>Same shape (unknown reservation → 200)</td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Request helpers</td><td><code>alfio.util.RequestUtils</code>, <code>ReservationApiV2Controller.confirmOverview</code></td><td>Raw body; customerIp</td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Public frontend</td><td><code>saferpay-payment-proxy/</code>, <code>model/event.ts</code>, selector html, <code>app.module.ts</code>, overview (Pay hidden while <code>submitting</code>), guard, processing page</td><td>Copy and register</td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Admins</td><td><code>src/main/webapp/alfio-admin-v1/js/admin/filter/util.js</code>, <code>…/angular-templates/admin/partials/configuration/{system,organization}.html</code>; <code>frontend/admin/src</code> <code>model/event.ts</code>, <code>service/reservation-format.ts</code>, <code>components/payment-method.ts</code></td><td>Label, panels and icon</td></tr>
+<tr><td><span class="badge">reuse</span></td><td>Test harnesses</td><td><code>SaferpayManagerTest</code>, <code>PayUManagerLifecycleTest</code>, <code>StripeReservationFlowIntegrationTest</code>/<code>BaseReservationFlowTest</code>, WireMock, <code>CheckRestApiStability</code>, e2e <code>BaseE2ETest</code> (+ currency hook)/<code>ReservationFlow</code>/<code>AdminConsole</code></td><td>Templates</td></tr>
+<tr class="green"><td><span class="sev info">new</span></td><td>PayUPaymentWebhookController</td><td><code>controller/payment/api/payu/</code></td><td>notifyUrl has no handler today (B4)</td></tr>
+<tr class="green"><td><span class="sev info">new</span></td><td>PayUCallbackController</td><td><code>controller/payment/</code></td><td>Handles <code>error=501</code> and abandonment (M1)</td></tr>
+<tr class="green"><td><span class="sev info">new</span></td><td>payu-payment-proxy (provider + component + html)</td><td><code>frontend/public/src/app/payment/payu-payment-proxy/</code></td><td>Each proxy matches its own name</td></tr>
+<tr class="green"><td><span class="sev info">new</span></td><td>Client-IP helper method</td><td><code>alfio.util.RequestUtils</code></td><td>No such helper exists</td></tr>
+<tr class="green"><td><span class="sev info">new</span></td><td><code>customerIp</code> field + <code>withCustomerIp</code></td><td><code>PaymentSpecification</code></td><td>Avoids changing 14 call sites</td></tr>
+</table>
+</div>
+
+<h2 id="technical">Technical approach</h2>
+
+<div class="card">
+<b>Re-confirm state matrix</b> (doPayment with an existing PENDING transaction)
+<div class="table-wrap">
+<table>
+<tr><th>retrieveOrder / status</th><th>Remote action</th><th>Result</th><th>Transaction</th><th>Test</th></tr>
+<tr><td>FOUND + COMPLETED, match</td><td>none</td><td><code>successful(orderId)</code></td><td>→ COMPLETE (shared routine)</td><td>group 3</td></tr>
+<tr><td>FOUND + COMPLETED, mismatch</td><td>none (ERROR log)</td><td><code>pending(orderId)</code></td><td>kept</td><td>group 3</td></tr>
+<tr><td>FOUND + PENDING</td><td>none</td><td><code>pending(orderId)</code></td><td>kept</td><td>red gate</td></tr>
+<tr><td>FOUND + WAITING_FOR_CONFIRMATION</td><td>PUT status COMPLETED (capture)</td><td><code>pending(orderId)</code></td><td>kept</td><td>red gate</td></tr>
+<tr><td>FOUND + NEW, cancel confirmed</td><td>DELETE (shared routine), then create</td><td>redirect to the new order</td><td>old one invalidated</td><td>red gate (302 + SUCCESS body)</td></tr>
+<tr><td>FOUND + NEW, cancel not confirmed</td><td>DELETE attempted</td><td><code>pending(orderId)</code> (WARN)</td><td>kept</td><td>group 3</td></tr>
+<tr><td>FOUND + CANCELED</td><td>none</td><td>create + redirect</td><td>old one invalidated</td><td>group 3</td></tr>
+<tr><td>NOT_FOUND</td><td>none</td><td>create + redirect</td><td>old one invalidated</td><td>group 3</td></tr>
+<tr><td>FOUND + unknown status</td><td>none</td><td><code>pending(orderId)</code></td><td>kept</td><td>group 3</td></tr>
+<tr><td>ERROR (timeout, 5xx, 401 after retry, bad body)</td><td>none</td><td><code>pending(orderId)</code></td><td>kept</td><td>group 3</td></tr>
+</table>
+</div>
+<p style="font-size:13px;color:var(--dim)"><code>pending</code> → confirmOverview 422. <code>failed</code> is never used while a previous order may be payable, because core would delete the PENDING transaction.</p>
+</div>
+
+<div class="card">
+<b>Status mapping</b> (<code>checkOrderStatus</code>)
+<div class="table-wrap">
+<table>
+<tr><th>PayU status</th><th>Side effect</th><th>Webhook</th><th>Force-check / stuck check</th><th>Effect</th></tr>
+<tr><td>COMPLETED</td><td>completion routine</td><td><code>successful</code> / <code>error</code> on a mismatch</td><td>same</td><td>Reservation complete / PayU retries</td></tr>
+<tr><td>CANCELED</td><td>invalidate the transaction; extend the validity</td><td><code>cancelled</code></td><td>same</td><td>Back to PENDING; force-check → failed</td></tr>
+<tr><td>WAITING_FOR_CONFIRMATION</td><td>capture</td><td><code>pending</code></td><td>same</td><td>→ WAITING_EXTERNAL_CONFIRMATION (not in the stuck check)</td></tr>
+<tr><td>PENDING</td><td>none</td><td><code>pending</code></td><td>same</td><td>as above</td></tr>
+<tr><td>NEW</td><td>none</td><td><code>notRelevant</code></td><td><code>error</code> (no-op, no STUCK)</td><td>none; force-check → pending</td></tr>
+<tr><td>unknown</td><td>none</td><td><code>pending</code></td><td>same</td><td>as above</td></tr>
+<tr><td>NOT_FOUND / ERROR read</td><td>none</td><td><code>error</code></td><td><code>error</code></td><td>webhook 500; force-check → pending</td></tr>
+</table>
+</div>
+</div>
+
+<div class="grid2">
+<div class="card">
+<b>Notification endpoint</b> <span class="badge">@RestController</span>
+<p>POST <code>/api/payment/webhook/payu/reservation/{reservationId}</code>. Header <code>OpenPayu-Signature</code>, falling back to <code>X-OpenPayU-Signature</code>; raw body via <code>RequestUtils.readRequest</code>.</p>
+<table>
+<tr><th>Outcome</th><th>HTTP</th></tr>
+<tr><td>successful</td><td>200 <code>OK</code></td></tr>
+<tr><td>error (bad signature or JSON, provider missing, order unreadable or mismatched)</td><td>500 + reason</td></tr>
+<tr><td>NOT_RELEVANT / initiated / cancelled / failed</td><td>200 + reason</td></tr>
+<tr><td>unknown reservation</td><td>200 <code>NOT_RELEVANT</code> + WARN</td></tr>
+<tr><td>empty or unreadable body</td><td>400 <code>NOK</code></td></tr>
+</table>
+</div>
+<div class="card">
+<b>Return callback</b> <span class="badge">@Controller</span>
+<p>GET <code>/{type}/{identifier}/reservation/{rid}/payment/payu/return</code>, with optional <code>error</code> and <code>errorCode</code>.</p>
+<table>
+<tr><th>Condition</th><th>Redirect</th></tr>
+<tr><td>purchase context not found</td><td><code>/</code></td></tr>
+<tr><td>reservation not found</td><td><code>/{type}/{identifier}</code></td></tr>
+<tr><td><code>error</code> + cancel true</td><td><code>…/overview?paymentCancelled=true</code></td></tr>
+<tr><td><code>error</code> + cancel false → force-check empty or failed</td><td><code>…/overview?paymentCancelled=true</code></td></tr>
+<tr><td><code>error</code> + cancel false → force-check other</td><td><code>…/book</code></td></tr>
+<tr><td>no error → force-check failed</td><td><code>…/overview?paymentCancelled=true</code></td></tr>
+<tr><td>no error → empty / successful / pending</td><td><code>…/book</code> (the guard routes)</td></tr>
+</table>
+</div>
+</div>
+
+<details class="card">
+<summary>PayUManager details (constructors, config access, read, cancel, completion, parsing, discard, cache, timeouts, refunds)</summary>
+<ul class="tight">
+  <li><b>Constructors</b>: the public 5-arg one stays; a second <code>@Autowired</code> one takes <code>alfio.payu.endpoint-override</code>.</li>
+  <li><b>Config access</b>: everything comes from the <code>ALL_KEYS</code> map via <code>getFor(Set, level)</code>. Never the single-key overload, which the red-gate mock does not stub.</li>
+  <li><b>Constants</b>: <code>RETURN_URL_TEMPLATE</code> = <code>…/payment/payu/return</code>, plus <code>ADDITIONAL_INFO_RESERVATION_ID</code>, the currencies and the buyer-language set (to be verified).</li>
+  <li><b>retrieveOrder</b>, three outcomes:
+    <ul class="tight">
+      <li>FOUND: HTTP success, SUCCESS body, non-empty <code>orders</code>.</li>
+      <li>NOT_FOUND: HTTP 404 or PayU "not found" (<code>DATA_NOT_FOUND</code>, to be verified).</li>
+      <li>ERROR: everything else.</li>
+    </ul>
+  </li>
+  <li><b>cancelOrder</b>: DELETE. <s>CANCELLED when the body has SUCCESS (any HTTP code), or when a re-read shows CANCELED or NOT_FOUND.</s> <i>(Superseded by PI1/PI2.)</i> After the DELETE (any response) the order is always re-read; CANCELLED only when the re-read is CANCELED or NOT_FOUND; a COMPLETED re-read → ERROR log, NOT_CANCELLED. Otherwise NOT_CANCELLED (WARN).</li>
+  <li><b>completeTransaction</b>: validate amount, currency and extOrderId, then transaction COMPLETE + <code>PayUToken</code>. A mismatch is logged at ERROR and changes nothing.</li>
+  <li><b>doPayment</b>:
+    <ul class="tight">
+      <li><code>extOrderId</code> = <code>&lt;rid&gt;-&lt;8 random hex chars&gt;</code>.</li>
+      <li><code>validityTime</code> = max(remaining seconds, 300), falling back to <code>RESERVATION_TIMEOUT</code> when the reservation is null.</li>
+      <li>Reservation validity = now + validityTime + 5 min. Clock-based throughout.</li>
+      <li><code>failed</code> only when no previous order may be payable.</li>
+    </ul>
+  </li>
+  <li><b>parseTransactionPayload</b>: an invalid signature or JSON gives empty. Otherwise an ORDER, REFUND or UNRECOGNIZED payload (null-safe). <b>processWebhook</b>: a non-ORDER kind or a different orderId gives notRelevant. <b>forceTransactionCheck</b> never touches <code>reservation</code>.</li>
+  <li><b>discardTransaction</b>:
+    <ul class="tight">
+      <li>NEW/PENDING → cancelOrder; true only if CANCELLED.</li>
+      <li>CANCELED / NOT_FOUND → true.</li>
+      <li>COMPLETED / WAITING / ERROR → false.</li>
+    </ul>
+  </li>
+  <li><b>initTransaction</b> → <code>errorToken(msg, true)</code>, a private static nested <code>TransactionInitializationToken</code>. Core then reconciles via the force-check.</li>
+  <li><b>Token cache</b>: Caffeine, keyed by endpoint + clientId + SHA-256 of the secret. Renewed 60 s early. A missing <code>expires_in</code> means 300 s. A 401 invalidates the key and retries once.</li>
+  <li><b>Timeouts</b>: 10 s per request, including OAuth.</li>
+  <li><b>Refund</b>:
+    <ul class="tight">
+      <li>A GET of the refunds gives k; <code>extRefundId</code> = <code>&lt;rid&gt;-refund-&lt;amountCents&gt;-&lt;k+1&gt;</code>.</li>
+      <li>A timeout or I/O error triggers a re-read; the id found counts as true.</li>
+      <li>If the initial GET fails, return false and send no POST.</li>
+    </ul>
+  </li>
+  <li><b>getInfo</b>: refunded = sum of FINALIZED refunds.</li>
+  <li><b>Code rules</b>: no ternaries (do not copy the one in <code>PaymentManagerUtils</code>), allowed Lombok only, GPL headers, no Jackson 2.</li>
+</ul>
+</details>
+
+<details class="card">
+<summary>customerIp, frontend, admin, i18n, stepper, Docker</summary>
+<ul class="tight">
+  <li><b>customerIp</b>: <code>confirmOverview</code> calls <code>.withCustomerIp(RequestUtils clientIp(request))</code>. The nullable field is set to null by the existing constructors through a private all-fields constructor.</li>
+  <li><b>Public</b>: <code>'PAYU'</code> goes into <code>StaticPaymentMethodNames</code> and <code>PaymentProxy</code>, plus <code>staticPaymentMethodDetails.PAYU</code>. The proxy folder is copied from Saferpay and registered in <code>app.module.ts</code> and the selector. In <code>overview.component.ts</code>, <code>paymentCancelled === 'true'</code> triggers <code>showError('reservation-page.payment.cancelled')</code>.</li>
+  <li><b>Legacy admin</b>: <code>'PAYU': 'PayU: BLIK, fast transfer, card'</code>. The panels are copied from Saferpay and <code>paymentPayu</code> is added to both <code>#PAYMENT</code> ng-ifs. <b>New admin</b>: union entry plus <code>case 'PAYU'</code> → <code>credit-card</code>.</li>
+  <li><b>EN keys</b>: <code>reservation-page.payment-method.payu</code>, <code>reservation-page.payment.payu.description</code>, <code>error.STEP2_PAYU_unexpected</code>, <code>reservation-page.payment.cancelled</code>.</li>
+  <li><b>PL</b>: the four keys in Polish, <code>common.confirm</code>, <code>event-days.from</code>/<code>to</code>, the missing purchase-path keys, and <code>subscription.detail.validity.CUSTOM.from/to</code>.</li>
+  <li><b>Stepper</b>: <code>stepper.component.scss</code> L44–46 → <code>var(--bs-primary)</code>.</li>
+  <li><b>Docker</b> (README on plo-pl): <code>./gradlew distribution -x test &amp;&amp; docker build -t alfio-plo-pl:payu-&lt;date&gt; ./build/dockerize</code>.</li>
+</ul>
+</details>
+
+<h2 id="tests">Tests</h2>
+<div class="card">
+<p>2-8 focused tests per implementation step group. Verification of a group runs only its new tests. A full <code>./gradlew build -Dpgsql.version=16</code> runs once before the e2e and before pushing.</p>
+<b>Red gate</b>: <code>PayUManagerLifecycleTest</code> (untracked; <code>git add</code> it in commit 1), 7/7 must pass
+<div class="table-wrap">
+<table>
+<tr><th>Test</th><th>Today</th><th>Fixed by</th></tr>
+<tr><td>doPaymentMustNotCreateSecondOrderWhileFirstAwaitsConfirmation</td><td class="fail">fail</td><td>matrix, WAITING row</td></tr>
+<tr><td>doPaymentMustNotCreateSecondOrderWhileFirstIsBeingPaid</td><td class="fail">fail</td><td>matrix, PENDING row</td></tr>
+<tr><td>doPaymentCancelsStillNewOrderBeforeCreatingAnotherOne</td><td class="fail">fail</td><td>matrix, NEW row (302 + SUCCESS body = cancelled)</td></tr>
+<tr><td>newOrderIsNotReportedAsPaymentInProgress</td><td class="fail">fail</td><td>NEW → force-check <code>error</code></td></tr>
+<tr><td>signedRefundNotificationIsAcknowledged</td><td class="fail">fail</td><td>refund payload</td></tr>
+<tr><td>signedNotificationWithoutExtOrderIdDoesNotThrow</td><td class="fail">fail</td><td>null-safe parsing</td></tr>
+<tr><td>fixtureCreatesOrderWhenNoTransactionExists</td><td class="pass">pass</td><td>must stay green (null-reservation fallback)</td></tr>
+</table>
+</div>
+</div>
+<div class="card table-wrap">
+<table>
+<tr><th>#</th><th>Group</th><th>Tests</th><th>Focus</th></tr>
+<tr><td>1</td><td><code>PayUSignatureTest</code></td><td>5</td><td>MD5 and SHA-256 vectors, case-insensitive digest, wrong key, malformed or missing header</td></tr>
+<tr><td>2</td><td>Order building</td><td>7</td><td>URLs, customerIp and fallback, validityTime and fallback, blank names omitted, language set, extOrderId prefix, updateValidity</td></tr>
+<tr><td>3</td><td>doPayment re-confirm matrix</td><td>7</td><td>COMPLETED match or mismatch, CANCELED, NOT_FOUND, read error, DELETE without SUCCESS, unknown status</td></tr>
+<tr><td>4</td><td>Status mapping</td><td>6</td><td>COMPLETED match or mismatch, CANCELED, WAITING capture, NEW (webhook NOT_RELEVANT / force-check ERROR), unknown</td></tr>
+<tr><td>5</td><td>Notification parsing</td><td>5</td><td>invalid signature, extOrderId mismatch, refund, different orderId, null status</td></tr>
+<tr><td>6</td><td>Hardening</td><td>7</td><td>token cache, different secret, 401 retry, missing expires_in, 10 s timeouts, endpoint override, currency gating</td></tr>
+<tr><td>7</td><td>Discard, refund, info</td><td>8</td><td>discard NEW/PENDING/COMPLETED-WAITING/CANCELED-NOT_FOUND/DELETE refused; deterministic extRefundId; timeout + re-read; refunded sum</td></tr>
+<tr><td>8</td><td><code>PayUPaymentWebhookControllerTest</code></td><td>6</td><td>200 / 500 / 200 NOT_RELEVANT / unknown reservation 200 / empty body 400 / header fallback</td></tr>
+<tr><td>9</td><td><code>PayUCallbackControllerTest</code></td><td>6</td><td>error + cancel; error + cancel false + empty; success; failed; pending; unknown context</td></tr>
+<tr><td>10</td><td>Utilities</td><td>4</td><td>XFF / remoteAddr / fallback; wither copies</td></tr>
+<tr><td>11</td><td><code>PayUReservationFlowIntegrationTest</code> (WireMock)</td><td>3</td><td>signed COMPLETED → COMPLETE (transaction COMPLETE); <code>error=501</code> → DELETE + PENDING; refund notification → 200. Then the descriptor flag procedure (L74 true → run → revert → rerun → commit only the json)</td></tr>
+<tr><td>12</td><td><code>PayUPaymentE2ETest</code> (sandbox)</td><td>2–3</td><td><code>BaseE2ETest.currency()</code> hook → PLN; PAYU only; local bootRun (not :8090); ReservationFlow PayU step; AdminConsole label; <code>e2e-test.log</code></td></tr>
+</table>
+</div>
+
+<h2 id="branches">Branch / commit plan</h2>
+<div class="card">
+<p>History is reshaped with <code>git reset --soft</code> / <code>--amend</code> (no interactive rebase). Push <code>backup/feature-payu-wip</code> to origin first, then <code>--force-with-lease</code>. No AI trailers; no PRs.</p>
+<div class="table-wrap">
+<table>
+<tr><th>Branch (base)</th><th>Commits</th></tr>
+<tr><td><code>feature/payu</code> (main)</td><td>1 backend + lifecycle + <code>git add</code> of the red-gate test · 2 hardening · 3 customer IP · 4 notification + return endpoints · 5 public frontend · 6 admin consoles · 7 EN translations · 8 integration test + descriptor · 9 sandbox E2E (+ BaseE2ETest currency hook)</td></tr>
+<tr><td><code>fix/mollie-ignore-unsupported-methods</code></td><td>unchanged</td></tr>
+<tr><td><code>fix/pl-translations</code> (main)</td><td>Polish purchase-path and PayU keys (fork-only)</td></tr>
+<tr><td><code>fix/stepper-active-color</code> (main)</td><td>theme primary colour for the active badge (PR candidate, not opened)</td></tr>
+<tr><td><code>plo-pl</code> (new, from main)</td><td><code>git merge --no-edit</code> of all four, regenerate the descriptor if needed, README Docker section, <code>.maister/</code></td></tr>
+</table>
+</div>
+</div>
+
+<h2 id="success">Success criteria</h2>
+<div class="card">
+<ul class="tight">
+  <li><code>PayUManagerLifecycleTest</code> 7/7 green</li>
+  <li><code>./gradlew build -Dpgsql.version=16</code> green on <code>feature/payu</code> and <code>plo-pl</code></li>
+  <li>The integration test confirms via a signed notification with the transaction COMPLETE; a cancelled return gives PENDING plus a DELETE</li>
+  <li>The sandbox e2e completes a PLN purchase via return + force-check; <code>e2e-test.log</code> produced</li>
+  <li>No second POST <code>/orders</code> while an order is PENDING, WAITING or unknown, or after an unconfirmed DELETE</li>
+  <li><code>doPayment</code> never returns <code>failed</code> while a previous order may be payable; NEW never marks a reservation STUCK</li>
+  <li>Refund, unknown and unknown-reservation notifications answer 200; only ERROR answers 500; a refund retried after a timeout is not duplicated</li>
+  <li>Correct label, icon and description; the admin panels render; the new admin shows the card icon</li>
+  <li>All five branches and the backup ref pushed; no AI trailers in <code>git log</code></li>
+</ul>
+<p style="font-size:13px;color:var(--dim)">Standards: AGENTS.md (no ternaries, restricted Lombok, GPL header, no Jackson 2, EN keys only), CONTRIBUTING.md (integration + E2E tests, <code>requiredPaymentProxies</code>, e2e log, no AI co-authors), docs/admin-style-guide.md.</p>
+</div>
+
+<h2 id="audit">Audit amendments</h2>
+<div class="card table-wrap">
+<p>Applied from <a href="../verification/spec-audit.md" target="_blank" rel="noopener">spec-audit.md ↗</a> (pass-with-concerns; autonomous owner mode).</p>
+<table>
+<tr><th>ID</th><th>Change</th></tr>
+<tr><td><span class="sev critical">H1</span></td><td>Tri-state <code>retrieveOrder</code>. A new order only after FOUND+CANCELED or NOT_FOUND. ERROR → <code>pending</code>, keeping the transaction.</td></tr>
+<tr><td><span class="sev critical">H2</span></td><td>A shared completion routine marks the transaction COMPLETE (Saferpay precedent). A mismatch → ERROR log, then pending (doPayment) or ERROR (webhook). Never <code>failed</code> while an order may be payable. Key Decision reworded.</td></tr>
+<tr><td><span class="sev critical">H3</span></td><td>Shared cancel routine. Success is judged on the body SUCCESS (or a CANCELED/NOT_FOUND re-read) <i>(the SUCCESS-body criterion is superseded by PI1)</i>. NEW → create only when the cancel is confirmed, otherwise pending. Used by <code>discardTransaction</code> too.</td></tr>
+<tr><td><span class="sev warning">M1</span></td><td>Expiry analysis corrected: the stuck check, not cleanup. NEW → NOT_RELEVANT in webhooks, <code>error</code> in force-check (no STUCK; red gate respected). WAITING_EXTERNAL_CONFIRMATION gap recorded as a risk.</td></tr>
+<tr><td><span class="sev warning">M2</span></td><td><code>BaseE2ETest.currency()</code> hook (default CHF); PLN for PayU.</td></tr>
+<tr><td><span class="sev warning">M3</span></td><td>Groups added for the re-confirm matrix and for notification parsing; old group 6 split into webhook controller, callback controller and utilities.</td></tr>
+<tr><td><span class="sev warning">M4</span></td><td>Unknown reservation → 200 + WARN; 400 only for an empty body.</td></tr>
+<tr><td><span class="sev warning">M5</span></td><td>DELETE on PENDING to be verified on the sandbox; a refusal means "not cancelled" (pending / false); restrict to NEW if funds can still arrive.</td></tr>
+<tr><td><span class="sev warning">M6</span></td><td>Deterministic <code>extRefundId</code> plus a re-read after a timeout.</td></tr>
+<tr><td><span class="sev warning">M7</span></td><td>Mollie rationale corrected (Mollie reuses an open payment); double-submit guard checked.</td></tr>
+<tr><td><span class="sev info">L1–L9</span></td><td>FR5 wording · legacy admin paths · nested <code>errorToken</code> class + <code>statusChanged=true</code> · <code>git add</code> of the red-gate test · descriptor flag procedure · single-key mock overload not used · lock-duration note (10 s timeouts) · toast when CANCELED arrived first · POST-timeout orphan note</td></tr>
+<tr><td><span class="sev info">extra</span></td><td>Push the backup ref before the force-push; IPv6 <code>customerIp</code> check</td></tr>
+</table>
+</div>
+
+<h2 id="post-impl">Post-implementation amendments</h2>
+<div class="card table-wrap">
+<p>Recorded after implementation and the sandbox runs (CP-W1, spec drift). Where an earlier statement in this spec disagrees, these rows win.</p>
+<table>
+<tr><th>ID</th><th>Change</th></tr>
+<tr><td><span class="sev critical">PI1</span></td><td><code>cancelOrder</code>: after the DELETE (any response: SUCCESS, non-SUCCESS, timeout or I/O error) the order is <b>always re-read</b>. CANCELLED only when the re-read is FOUND+CANCELED or NOT_FOUND. A COMPLETED re-read → ERROR log, NOT_CANCELLED. Reason: on the sandbox, DELETE on a COMPLETED order returns SUCCESS but the order stays COMPLETED, so a SUCCESS body alone proves nothing. Commit dcedbd9ad.</td></tr>
+<tr><td><span class="sev warning">PI2</span></td><td>PayU applies an accepted DELETE asynchronously (the order can still be NEW or PENDING right after it). After an accepted DELETE the order is re-read with bounded polling (commit 6475c6ecb), now with an overall time budget and an injectable pause (verification fix batch), so the time spent polling under the reservation lock is bounded.</td></tr>
+<tr><td><span class="sev warning">PI3</span></td><td>IPv6 <code>customerIp</code> is normalized before it is sent: brackets and the zone index (<code>%eth0</code>) are stripped, because PayU rejects them. Commit 81ae831b2.</td></tr>
+<tr><td><span class="sev info">PI4</span></td><td>Sandbox facts: <code>DATA_NOT_FOUND</code> comes with HTTP 404. DELETE on a PENDING order → CANCELED, and no funds arrive after it (the M5 "restrict to NEW" fallback is not needed). A <code>localhost</code> <code>notifyUrl</code> is accepted at order creation. The refunds listing has the shape <code>{refunds:[{refundId, extRefundId, amount, currencyCode, status PENDING|FINALIZED|…}]}</code>.</td></tr>
+<tr><td><span class="sev warning">PI5</span></td><td>Refund idempotency wording: the deterministic <code>extRefundId</code> protects a same-call retry after a timeout (the re-read finds it) and concurrent duplicates. It does <b>not</b> protect an operator retry after a refund that actually landed: the refund count k has grown, so the next id is new and PayU accepts a second refund. Operators must check the refunds before retrying.</td></tr>
+<tr><td><span class="sev warning">PI6</span></td><td>Lock-duration risk: the worst case under the reservation lock is bounded by the HTTP timeouts (10 s each, for the sequential OAuth / GET / DELETE / re-read / POST calls and the single 401 retry) plus the cancel polling budget. Recommend a reverse-proxy read timeout ≥ 120 s.</td></tr>
+<tr><td><span class="sev info">PI7</span></td><td>The hidden <code>alfio.payu.endpoint-override</code> is ignored in live mode (<code>PAYU_LIVE_MODE=true</code> always uses <code>https://secure.payu.com</code>), so a stray test property cannot send production traffic elsewhere (verification fix).</td></tr>
+</table>
+</div>
+</main>
+</body>
+</html>

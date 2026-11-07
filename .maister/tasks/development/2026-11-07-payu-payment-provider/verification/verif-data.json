@@ -1,0 +1,436 @@
+{
+ "generated": "2026-11-07T16:24:59Z",
+ "cycle": 2,
+ "status": "passed_with_issues",
+ "plan": "111/113",
+ "tldr": [
+  "Verdict: Passed with Issues (cycle 2, post-fix). 0 code-critical. All 15 fixable code/doc findings plus 6 re-review findings are fixed (6 commits). Full build after batch 1: 1064 tests, 0 failures. Targeted PayU tests after batch 2: 117/117.",
+  "Open: 3 critical operational go-live checks (PR-B1 notification on a public URL, PR-B2 live/sandbox hygiene, PR-B3 alerting), now documented in the README runbook; design and core warnings accepted (CR-W3, CR-W4, PR-W4, PR-W6 and others).",
+  "Deferred to Phase 14: pushes, the .maister commit, worktree removal, the plo-pl full build and an image rebuild."
+ ],
+ "risks": [
+  "No real PayU notification has reached the server yet (localhost in E2E); the webhook was proven only with WireMock.",
+  "Core gap: WAITING_EXTERNAL_CONFIRMATION is never re-checked by a job; a lost final notification needs a manual force-check.",
+  "Live mode (production POS, real BLIK, real refund) has never been exercised.",
+  "Lock duration under the reservation row lock can reach ~90 s when PayU is down (cancel polling).",
+  "Docker daemon (OrbStack) was unreachable during the production check; image alfio-plo-pl:payu-20261107 was built earlier per G19."
+ ],
+ "checks": [
+  {
+   "name": "Completeness",
+   "status": "passed_with_issues",
+   "detail": "98.2% of plan steps; standards 10/10 followed; documentation adequate (spec drift on cancel semantics)",
+   "report": "completeness-report.md"
+  },
+  {
+   "name": "Test suite",
+   "status": "skipped (passed in implementation)",
+   "detail": "./gradlew build green: feature/payu 1047 tests, plo-pl 1050, 0 failures; PayU targeted tests 90/90 rerun by the reality check",
+   "report": "../implementation/work-log.md"
+  },
+  {
+   "name": "Code review",
+   "status": "issues_found",
+   "detail": "0 critical, 4 warning, 12 info",
+   "report": "code-review-report.md"
+  },
+  {
+   "name": "Pragmatic review",
+   "status": "appropriate",
+   "detail": "0 critical, 3 warning, 8 info",
+   "report": "pragmatic-review.md"
+  },
+  {
+   "name": "Production readiness",
+   "status": "NO-GO until go-live checks",
+   "detail": "3 critical (operational), 11 warning, 7 info; readiness 68%",
+   "report": "production-readiness-report.md"
+  },
+  {
+   "name": "Reality check",
+   "status": "issues_found",
+   "detail": "works end to end on sandbox; 4 warnings (notification, core gap, live mode, unpushed)",
+   "report": "reality-check.md"
+  }
+ ],
+ "issues": [
+  {
+   "id": "PR-B1",
+   "severity": "critical",
+   "source": "production",
+   "description": "Real PayU notifications never reached this code; must be proven on a public HTTPS BASE_URL before go-live",
+   "location": "deployment / BASE_URL",
+   "fixable": false
+  },
+  {
+   "id": "PR-B2",
+   "severity": "critical",
+   "source": "production",
+   "description": "No guard on the live/sandbox switch; PAYU_* keys can be mixed across levels; sandbox POS 300746 must not stay configured in production",
+   "location": "admin settings PAYU_*",
+   "fixable": false
+  },
+  {
+   "id": "PR-B3",
+   "severity": "critical",
+   "source": "production",
+   "description": "Money-anomaly signals are log-only; no alerting or daily check of WAITING_EXTERNAL_CONFIRMATION / STUCK reservations",
+   "location": "operations",
+   "fixable": false
+  },
+  {
+   "id": "CR-W1",
+   "severity": "warning",
+   "source": "code_review",
+   "description": "Reservation lock can be held ~90 s (OAuth+GET+DELETE+5 re-reads with sleeps+POST, 10 s each)",
+   "location": "PayUManager.java:802-831",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: 3 s polling budget + injectable pause (b2fae5dea); residual: a single slow re-read can add up to the 10 s request timeout (documented, spec PI6)"
+  },
+  {
+   "id": "CR-W2",
+   "severity": "warning",
+   "source": "code_review",
+   "description": "Notification for a non-current order is dropped silently even when that order is COMPLETED (captured money, no alert)",
+   "location": "PayUManager.java:497-500",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: ERROR alert for paid notifications discarded by core, in webhook controller (ed7ab46e8, 1affdc531)"
+  },
+  {
+   "id": "CR-W3",
+   "severity": "warning",
+   "source": "code_review",
+   "description": "NOT_FOUND treated as no payable order; a credential/live-mode change while PENDING could cause a second order",
+   "location": "PayUManager.java:96-97,234-236,584-586,769",
+   "fixable": false
+  },
+  {
+   "id": "CR-W4",
+   "severity": "warning",
+   "source": "code_review",
+   "description": "GET on the return URL with ?error can cancel a PENDING order being paid (no CSRF on GET; sandbox showed no funds after DELETE)",
+   "location": "PayUCallbackController.java:72-77",
+   "fixable": false
+  },
+  {
+   "id": "PG-W1",
+   "severity": "warning",
+   "source": "pragmatic",
+   "description": "Deterministic extRefundId does not prevent a double refund on operator retry after a landed timed-out refund; wording overclaims",
+   "location": "PayUManager.java:667-726",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: refund Javadoc + spec PI5 state limits precisely"
+  },
+  {
+   "id": "PG-W2",
+   "severity": "warning",
+   "source": "pragmatic",
+   "description": "fix/pl-translations edits public_pl.properties directly (POEditor rule) — fork-only, not for upstream PR",
+   "location": "fix/pl-translations",
+   "fixable": false
+  },
+  {
+   "id": "PG-W3",
+   "severity": "warning",
+   "source": "pragmatic",
+   "description": "Real Thread.sleep in cancel polling with a hard-coded pause; unit tests sleep ~3 s",
+   "location": "PayUManager.java:104-105,819-831",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: injectable timing, tests use zero pause (b2fae5dea)"
+  },
+  {
+   "id": "CP-W1",
+   "severity": "warning",
+   "source": "completeness",
+   "description": "Spec does not reflect the built cancel routine (re-read after DELETE, async polling) nor the longer lock duration",
+   "location": "implementation/spec.md",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: spec Post-implementation amendments PI1–PI7"
+  },
+  {
+   "id": "CP-W2",
+   "severity": "warning",
+   "source": "completeness",
+   "description": "Step 19.9 ticked although worktree removal is pending",
+   "location": "implementation-plan.md 19.9",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: 19.9 marked partial"
+  },
+  {
+   "id": "CP-W3",
+   "severity": "warning",
+   "source": "completeness",
+   "description": "19.6 (.maister commit) and 19.8 (pushes) open — deferred to Phase 14",
+   "location": "implementation-plan.md",
+   "fixable": true
+  },
+  {
+   "id": "PR-W1",
+   "severity": "warning",
+   "source": "production",
+   "description": "alfio.payu.endpoint-override also overrides the LIVE endpoint (client_secret could go to another host); only a startup WARN",
+   "location": "PayUManager constructor",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: override ignored in live mode + ERROR (938d5ca3d)"
+  },
+  {
+   "id": "PR-W3",
+   "severity": "warning",
+   "source": "production",
+   "description": "COMPLETED notification for unknown reservation logged only at WARN",
+   "location": "PayUPaymentWebhookController",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: ERROR for paid notification with unknown UUID reservation (ed7ab46e8, 1affdc531)"
+  },
+  {
+   "id": "PR-W4",
+   "severity": "warning",
+   "source": "production",
+   "description": "WAITING_EXTERNAL_CONFIRMATION never re-checked by a job (core gap)",
+   "location": "TicketReservationManager / repository",
+   "fixable": false
+  },
+  {
+   "id": "PR-W6",
+   "severity": "warning",
+   "source": "production",
+   "description": "Refund 'success' = accepted, not FINALIZED; refund notifications ignored; credit note before result (core)",
+   "location": "PayUManager.refund",
+   "fixable": false
+  },
+  {
+   "id": "PR-W7",
+   "severity": "warning",
+   "source": "production",
+   "description": "Sandbox reservations left in DB after live switch read NOT_FOUND forever — clear before go-live",
+   "location": "operations",
+   "fixable": false
+  },
+  {
+   "id": "PR-W8",
+   "severity": "warning",
+   "source": "production",
+   "description": "Branches not pushed; image only local and date-tagged",
+   "location": "git / docker",
+   "fixable": true
+  },
+  {
+   "id": "PR-W9",
+   "severity": "warning",
+   "source": "production",
+   "description": "README lacks run / PayU go-live / proxy / rollback steps",
+   "location": "README.md (plo-pl)",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: README go-live runbook on plo-pl (5384c2a9f)"
+  },
+  {
+   "id": "PR-W2",
+   "severity": "warning",
+   "source": "production",
+   "description": "Secrets stored as plain TEXT (same as other providers)",
+   "location": "admin settings",
+   "fixable": false
+  },
+  {
+   "id": "PR-W5",
+   "severity": "warning",
+   "source": "production",
+   "description": "Reverse-proxy read timeout should be >=120 s given worst-case lock duration",
+   "location": "deployment",
+   "fixable": false
+  },
+  {
+   "id": "PR-W10",
+   "severity": "warning",
+   "source": "production",
+   "description": "Dockerfile image.source label points to upstream",
+   "location": "src/main/dist/Dockerfile",
+   "fixable": false
+  },
+  {
+   "id": "PR-W11",
+   "severity": "warning",
+   "source": "production",
+   "description": "No metrics/error tracking/rate limiting (inherited); force-check + webhook unauthenticated",
+   "location": "deployment",
+   "fixable": false
+  },
+  {
+   "id": "CR-I1",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Log injection: error/errorCode query params and unsigned orderId logged raw",
+   "location": "PayUCallbackController.java:73, PayUPaymentWebhookController.java:64",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: RequestUtils.sanitizeForLog (53f3a9142, 1affdc531)"
+  },
+  {
+   "id": "CR-I2",
+   "severity": "info",
+   "source": "code_review",
+   "description": "500 response body echoes internal reason",
+   "location": "PayUPaymentWebhookController.java:72",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: generic NOK body (53f3a9142)"
+  },
+  {
+   "id": "CR-I3",
+   "severity": "info",
+   "source": "code_review",
+   "description": "extOrderId check passes when PayU omits it",
+   "location": "PayUManager.java:281-283",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: missing extOrderId = mismatch (53f3a9142)"
+  },
+  {
+   "id": "CR-I4",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Successful create response without orderId → NPE",
+   "location": "PayUManager.java:324-328",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: failed without DB writes, no NPE (53f3a9142)"
+  },
+  {
+   "id": "CR-I8",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Cancellation toast reappears on reload while ?paymentCancelled=true stays in URL",
+   "location": "overview.component.ts:72-74",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: query param removed after toast (b0fd49be8)"
+  },
+  {
+   "id": "CR-I10",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Stale 'to be verified' comments (DATA_NOT_FOUND, BUYER_LANGUAGES)",
+   "location": "PayUManager.java:96",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: comments updated with sandbox facts (53f3a9142)"
+  },
+  {
+   "id": "CR-I5",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Leftmost X-Forwarded-For is client-controlled (accepted risk; only PayU fraud scoring)",
+   "location": "RequestUtils.java:61-74",
+   "fixable": false
+  },
+  {
+   "id": "CR-I11",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Return without error while still NEW leaves buyer on processing page until order expires",
+   "location": "PayUCallbackController.java:78-85",
+   "fixable": false
+  },
+  {
+   "id": "RC-I7",
+   "severity": "info",
+   "source": "reality",
+   "description": "Polish wording needs a native review (subskrypcja vs karnet)",
+   "location": "public_pl.properties",
+   "fixable": false
+  },
+  {
+   "id": "RC-I1",
+   "severity": "info",
+   "source": "reality",
+   "description": "Docker image built but never started",
+   "location": "alfio-plo-pl:payu-20261107",
+   "fixable": true
+  },
+  {
+   "id": "RV-N1",
+   "severity": "warning",
+   "source": "code_review",
+   "description": "Re-review: non-PENDING paid-notification alert unreachable in manager (core filters first)",
+   "location": "PayUManager.processWebhook",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed: alert moved to PayUPaymentWebhookController, dead branches removed (1affdc531)"
+  },
+  {
+   "id": "RV-N2",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Re-review: Unknown-reservation ERROR forgeable from unsigned body",
+   "location": "controllers / PayUManager",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed (1affdc531)"
+  },
+  {
+   "id": "RV-N3",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Re-review: Budget comment overstated",
+   "location": "controllers / PayUManager",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed (1affdc531)"
+  },
+  {
+   "id": "RV-N4",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Re-review: PAID_ORDER_STATUSES duplicated",
+   "location": "controllers / PayUManager",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed (1affdc531)"
+  },
+  {
+   "id": "RV-N5",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Re-review: reservationId logged unsanitized",
+   "location": "controllers / PayUManager",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed (1affdc531)"
+  },
+  {
+   "id": "RV-N6",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Re-review: Test-side nits (FQN Duration)",
+   "location": "controllers / PayUManager",
+   "fixable": true,
+   "fixed": true,
+   "resolution": "fixed (1affdc531)"
+  },
+  {
+   "id": "RV-Q1",
+   "severity": "info",
+   "source": "code_review",
+   "description": "Open question: does GET orders/{id} always return extOrderId? Stricter CR-I3 check holds a paid order as mismatch otherwise (sandbox GETs returned it in E2E)",
+   "location": "PayUManager.completeTransaction",
+   "fixable": false
+  }
+ ],
+ "history": [
+  "Cycle 1 (15:58Z): passed_with_issues — 3 critical (operational go-live), 21 warnings, 10 info.",
+  "Fix batch 1 (feature/payu b0fd49be8, b2fae5dea, 53f3a9142, ed7ab46e8, 938d5ca3d): CR-W1, PG-W3, CR-W2, PR-W3, PR-W1, CR-I1–I4, CR-I8, CR-I10, PG-W1 → re-review: 10 resolved, 2 partial, new N1 (warning) + N2–N6 (info).",
+  "Docs: spec Post-implementation amendments (CP-W1), plan 19.9 partial (CP-W2), README runbook 5384c2a9f on plo-pl (PR-W9).",
+  "Full build after batch 1 at 938d5ca3d: 1064 tests, 0 failures, 1 skipped (test-suite-results.md).",
+  "Fix batch 2 (1affdc531): N1–N6 fixed; targeted PayU tests 117/117 green. Full build re-run on plo-pl scheduled in Phase 14 before push.",
+  "plo-pl merged feature/payu twice (36610ff09 and after 1affdc531), no conflicts."
+ ]
+}
