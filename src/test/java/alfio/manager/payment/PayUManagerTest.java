@@ -834,8 +834,36 @@ class PayUManagerTest {
 
         assertTrue(payload.isPresent());
         assertEquals("payu-COMPLETED", payload.get().getType());
-        var result = manager.processWebhook(payload.get(), transaction, new PaymentContext(event));
-        assertEquals(PaymentWebhookResult.Type.NOT_RELEVANT, result.getType());
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            var result = manager.processWebhook(payload.get(), transaction, new PaymentContext(event));
+            assertEquals(PaymentWebhookResult.Type.NOT_RELEVANT, result.getType());
+            var errors = logs.messages(Level.ERROR);
+            assertEquals(1, errors.size(), errors.toString());
+            assertTrue(errors.get(0).contains(RESERVATION_ID) && errors.get(0).contains("ANOTHERORDER") && errors.get(0).contains(OLD_ORDER_ID),
+                errors.get(0));
+            assertTrue(errors.get(0).contains("refund"), errors.get(0));
+        }
+        verifyNoInteractions(httpClient);
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "ANOTHERORDER, WAITING_FOR_CONFIRMATION, PENDING, true",
+        "ANOTHERORDER, NEW, PENDING, false",
+        "ANOTHERORDER, CANCELED, PENDING, false",
+        "OLDORDER, COMPLETED, CANCELLED, true",
+        "OLDORDER, COMPLETED, COMPLETE, false"
+    })
+    void unmatchedPaidNotificationIsLoggedAsError(String orderId, String orderStatus, Transaction.Status transactionStatus, boolean errorExpected) {
+        var transaction = givenExistingTransaction();
+        when(transaction.getStatus()).thenReturn(transactionStatus);
+
+        try (var logs = LogCapture.of(PayUManager.class)) {
+            var result = manager.processWebhook(PayUWebhookPayload.order(RESERVATION_ID, orderId, orderStatus), transaction, new PaymentContext(event));
+
+            assertEquals(PaymentWebhookResult.Type.NOT_RELEVANT, result.getType());
+            assertEquals(errorExpected, !logs.messages(Level.ERROR).isEmpty(), logs.messages(Level.ERROR).toString());
+        }
         verifyNoInteractions(httpClient);
     }
 
@@ -1131,6 +1159,7 @@ class PayUManagerTest {
         when(transaction.getPriceInCents()).thenReturn(1000);
         when(transaction.getCurrency()).thenReturn("PLN");
         when(transaction.getPaymentProxy()).thenReturn(PaymentProxy.PAYU);
+        when(transaction.getStatus()).thenReturn(Transaction.Status.PENDING);
         when(transaction.getMetadata()).thenReturn(Map.of("extOrderId", EXISTING_EXT_ORDER_ID));
         when(transactionRepository.loadOptionalByStatusAndPaymentProxyForUpdate(RESERVATION_ID, Transaction.Status.PENDING, PaymentProxy.PAYU))
             .thenReturn(Optional.of(transaction));

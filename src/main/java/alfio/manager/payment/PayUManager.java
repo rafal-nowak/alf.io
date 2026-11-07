@@ -105,6 +105,8 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     private static final Duration CANCEL_CONFIRMATION_PAUSE = Duration.ofMillis(500);
     // the re-reads run under the reservation lock: the waiting for the cancellation is bounded as a whole
     private static final Duration CANCEL_CONFIRMATION_BUDGET = Duration.ofSeconds(3);
+    // order statuses in which the buyer's money has been taken (or authorized)
+    private static final Set<String> PAID_ORDER_STATUSES = Set.of("COMPLETED", "WAITING_FOR_CONFIRMATION");
     // used when the OAuth response has no expires_in
     private static final long DEFAULT_TOKEN_LIFETIME_SECONDS = 300;
     // a cached token is renewed this long before it expires
@@ -513,11 +515,22 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
             return PaymentWebhookResult.notRelevant("not a PayU order notification");
         }
         var notifiedOrderId = payUPayload.getOrderId();
-        if (notifiedOrderId == null || !notifiedOrderId.equals(transaction.getPaymentId())) {
+        boolean sameOrder = notifiedOrderId != null && notifiedOrderId.equals(transaction.getPaymentId());
+        if (sameOrder && transaction.getStatus() == Transaction.Status.PENDING) {
+            return checkOrderStatus(transaction, loadConfiguration(paymentContext.getPurchaseContext()),
+                PaymentWebhookResult.notRelevant("order not paid yet"));
+        }
+        var notifiedStatus = payUPayload.getOrderStatus();
+        boolean paid = notifiedStatus != null && PAID_ORDER_STATUSES.contains(notifiedStatus);
+        boolean alreadyCompleted = sameOrder && transaction.getStatus() == Transaction.Status.COMPLETE;
+        if (paid && !alreadyCompleted) {
+            LOGGER.error("PayU notified the {} order {} for reservation {}, whose transaction ({}) refers to order {}: money may be captured without a reservation; check the PayU panel and refund if needed",
+                notifiedStatus, notifiedOrderId, transaction.getReservationId(), transaction.getStatus(), transaction.getPaymentId());
+        }
+        if (!sameOrder) {
             return PaymentWebhookResult.notRelevant("notification refers to a different PayU order");
         }
-        return checkOrderStatus(transaction, loadConfiguration(paymentContext.getPurchaseContext()),
-            PaymentWebhookResult.notRelevant("order not paid yet"));
+        return PaymentWebhookResult.notRelevant("transaction is not pending");
     }
 
     /**

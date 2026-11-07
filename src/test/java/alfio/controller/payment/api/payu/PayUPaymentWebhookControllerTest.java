@@ -27,6 +27,8 @@ import alfio.test.util.LogCapture;
 import org.apache.logging.log4j.Level;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.springframework.http.HttpStatus;
 import org.springframework.mock.web.MockHttpServletRequest;
 
@@ -100,6 +102,25 @@ class PayUPaymentWebhookControllerTest {
         assertEquals(HttpStatus.OK, response.getStatusCode());
         assertEquals("NOT_RELEVANT", response.getBody());
         verify(ticketReservationManager, never()).processTransactionWebhook(anyString(), any(), any(), anyMap(), any());
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "COMPLETED, true",
+        "WAITING_FOR_CONFIRMATION, true",
+        "NEW, false",
+        "CANCELED, false"
+    })
+    void paidNotificationForUnknownReservationIsLoggedAsError(String status, boolean errorExpected) {
+        when(purchaseContextManager.findByReservationId(RESERVATION_ID)).thenReturn(Optional.empty());
+        var body = "{\"order\":{\"orderId\":\"ORDER-1\",\"status\":\"" + status + "\"}}";
+        try (var logs = LogCapture.of(PayUPaymentWebhookController.class)) {
+            var response = controller.receivePaymentNotification(request(body, "OpenPayu-Signature", SIGNATURE), RESERVATION_ID);
+
+            assertEquals(HttpStatus.OK, response.getStatusCode());
+            assertEquals(errorExpected, logs.messages(Level.ERROR).size() == 1, logs.messages(Level.ERROR).toString());
+            assertEquals(errorExpected, logs.messages(Level.WARN).isEmpty(), logs.messages(Level.WARN).toString());
+        }
     }
 
     @Test
