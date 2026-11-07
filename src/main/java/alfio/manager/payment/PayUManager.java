@@ -424,13 +424,24 @@ public class PayUManager implements PaymentProvider, WebhookHandler, PaymentInfo
     /**
      * PayU requires the buyer's IP address. The controller puts it in the payment specification; when it is missing
      * (for example, a payment not started from the public frontend), the loopback address is sent.
+     * <p>
+     * PayU refuses (INVALID_CUSTOMER_IP) an IPv6 address in brackets, as Jetty returns it, or with a zone index:
+     * both are removed.
      */
     private static String resolveCustomerIp(PaymentSpecification spec) {
         String customerIp = spec.getCustomerIp();
-        if (customerIp != null && !customerIp.isBlank()) {
-            return customerIp;
+        if (customerIp == null || customerIp.isBlank()) {
+            return DEFAULT_CUSTOMER_IP;
         }
-        return DEFAULT_CUSTOMER_IP;
+        String address = customerIp.trim();
+        if (address.startsWith("[") && address.endsWith("]")) {
+            address = address.substring(1, address.length() - 1);
+        }
+        int zoneIndex = address.indexOf('%');
+        if (zoneIndex > 0) {
+            address = address.substring(0, zoneIndex);
+        }
+        return address;
     }
 
     @Override

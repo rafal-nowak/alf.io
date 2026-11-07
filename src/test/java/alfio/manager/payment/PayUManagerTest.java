@@ -178,6 +178,28 @@ class PayUManagerTest {
         assertEquals("203.0.113.7", lastOrderBody().get("customerIp").getAsString());
     }
 
+    /**
+     * Jetty returns IPv6 addresses in brackets ("[0:0:0:0:0:0:0:1]"), which PayU refuses with INVALID_CUSTOMER_IP
+     */
+    @Test
+    void bracketedIpv6CustomerIpIsSentWithoutBrackets() {
+        var specification = spec(new CustomerName("Jan Kowalski", "Jan", "Kowalski", true), Locale.ENGLISH)
+            .withCustomerIp("[0:0:0:0:0:0:0:1]");
+        manager.doPayment(specification);
+        assertEquals("0:0:0:0:0:0:0:1", lastOrderBody().get("customerIp").getAsString());
+    }
+
+    /**
+     * PayU refuses an IPv6 address with a zone index ("fe80::1%lo0") with INVALID_CUSTOMER_IP
+     */
+    @Test
+    void ipv6ZoneIndexIsRemovedFromCustomerIp() {
+        var specification = spec(new CustomerName("Jan Kowalski", "Jan", "Kowalski", true), Locale.ENGLISH)
+            .withCustomerIp("[fe80::1%lo0]");
+        manager.doPayment(specification);
+        assertEquals("fe80::1", lastOrderBody().get("customerIp").getAsString());
+    }
+
     @Test
     void validityTimeIsRemainingReservationTimeWithFloor() {
         var now = Instant.now(TestUtil.clockProvider().getClock());
